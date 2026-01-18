@@ -12,7 +12,7 @@
 #define SYGNAL_WZNOW     SIGUSR2  // sygnał2 - wznów wpuszczanie
 #define SYGNAL_EWAKUACJA SIGRTMIN // sygnał3 - ewakuacja
 
-// PID-y pracowników technicznych (jeden na sektor)
+
 static pid_t pracownicy_techniczni[LICZBA_SEKTOROW];
 static Hala *g_hala = NULL;
 static sem_t *g_sem = NULL;
@@ -141,7 +141,7 @@ void proces_kierownika(Hala *hala, sem_t *sem, pid_t *pidy_pracownikow) {
 
         for (int s = 0; s < LICZBA_SEKTOROW; s++) {
             // Przykład: wstrzymaj sektor jeśli jest pełny
-            if (hala->kibice_w_sektorze[s] >= POJEMNOSC_SEKTORA) {
+            if (hala->kibice_w_sektorze_ilosc[s] >= POJEMNOSC_SEKTORA) {
                 if (!hala->wejscia[s].wstrzymane) {
                     sem_post(sem);
                     wstrzymaj_sektor(s);
@@ -167,6 +167,4 @@ void proces_kierownika(Hala *hala, sem_t *sem, pid_t *pidy_pracownikow) {
     }
 
     printf("[KIEROWNIK] Kończę pracę\n");
-}//
-// Created by kasztan on 12/4/25.
-//
+}

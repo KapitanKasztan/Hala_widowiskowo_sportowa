@@ -15,8 +15,7 @@
 #include <fcntl.h>
 #include <time.h>
 #include <string.h>
-
-// == STAŁE ==
+#include "logger.h"
 #define K_KIBICOW 160                              // pojemność hali (podzielna przez 8 i 10)
 #define LICZBA_KAS 10
 #define LICZBA_SEKTOROW 8
@@ -26,10 +25,9 @@
 #define MAX_PRZEPUSZCZONYCH 5
 #define DRUZYNA_A 0
 #define DRUZYNA_B 1
-#define POJEMNOSC_VIP (int)(0.003 * K_KIBICOW)     // mniej niż 0.3% * K
+#define POJEMNOSC_VIP (int)(0.1 * K_KIBICOW)     // mniej niż 0.3% * K
 #define SEKTOR_VIP 8
 
-// == KIBIC ==
 class Kibic {
 public:
     int id;
@@ -43,7 +41,6 @@ public:
     int liczba_biletow;
     int szuka_dziecka;
     int na_hali;
-    int w_kontroli;
     Kibic* towarzysz;
     Kibic* opiekun;
 
@@ -71,41 +68,41 @@ public:
         towarzysz(nullptr), opiekun(nullptr) {}
 };
 
-// == STANOWISKO KONTROLI ==
 typedef struct {
     int liczba_osob;
-    int druzyna_na_stanowisku;  // -1 jeśli puste
+    bool druzyna_na_stanowisku;
     int kibice_ids[MAX_OSOB_NA_STANOWISKU];
 } Stanowisko;
 
-// == WEJŚCIE DO SEKTORA ==
 typedef struct {
     Stanowisko stanowiska[STANOWISKA_NA_SEKTOR];
-    int kolejka_do_kontroli[K_KIBICOW / 4];
+    int kolejka_do_kontroli[K_KIBICOW/LICZBA_SEKTOROW];
     int rozmiar_kolejki;
-    int wstrzymane;  // kierownik może wstrzymać wpuszczanie
+    int wstrzymane;
+    int kibice_w_sektorze[K_KIBICOW/LICZBA_SEKTOROW];
 } WejscieDoSektora;
 
-// == HALA ==
 typedef struct {
     // Kasy
     int sprzedane_bilety;
     int otwarte_kasy;
-    int bilety_w_sektorze[LICZBA_SEKTOROW + 1];  // +1 dla VIP
+    int sprzedane_bilety_w_sektorze[LICZBA_SEKTOROW + 1];  // +1 dla VIP
 
     // Kolejka do kasy
     int kolejka_do_kasy[K_KIBICOW];
+    int kolejka_do_kasy_VIP[POJEMNOSC_VIP];
     int rozmiar_kolejki_kasy;
-    int vip_w_kolejce;
+    int rozmiar_kolejki_kasy_vip;
 
     // Wejścia i kontrola
     WejscieDoSektora wejscia[LICZBA_SEKTOROW];
 
     // Kibice na hali
     int kibice_na_hali;
-    int kibice_w_sektorze[LICZBA_SEKTOROW + 1];
-    int kibice_na_hali_ids[LICZBA_SEKTOROW][POJEMNOSC_SEKTORA];
-    int kibice_vip_na_hali_ids[POJEMNOSC_VIP + 1];
+    //int kibice_w_sektorze[LICZBA_SEKTOROW];
+    int kibice_w_sektorze[LICZBA_SEKTOROW+1][POJEMNOSC_SEKTORA];
+
+    int kibice_w_sektorze_ilosc[LICZBA_SEKTOROW + 1]; // +1 dla VIP
 
     // Dzieci bez opiekuna
     int dzieci_bez_opiekuna[K_KIBICOW / 10];
@@ -125,9 +122,8 @@ typedef struct {
     int ewakuacja;
 } Hala;
 
-// == DEKLARACJE FUNKCJI ==
-void proces_kasy(int id, Hala *hala, sem_t *sem);
+void proces_kasy(int id, Hala *hala, sem_t *kasa_sem);
 void generator_kas(Hala *hala, sem_t *sem);
-void proces_stanowiska(int sektor_id, int stanowisko_id, Hala *hala, sem_t *sem);
-void proces_kibica_vip(int idx, Kibic *kibic, Hala *hala, sem_t *sem);
-void proces_kibica_z_kontrola(int moj_idx, Kibic *kibic, Hala *hala, sem_t *sem);
+void proces_stanowiska(int sektor_id, int stanowisko_id, Hala *hala, sem_t *sektor_sem);
+void proces_kibica_vip(int idx, Kibic *kibic, Hala *hala, sem_t *sem_kasa, sem_t *sem_hala);
+void proces_kibica_z_kontrola(int moj_idx, Kibic *kibic, Hala *hala, sem_t *sem_kasa, sem_t *sem_hala);

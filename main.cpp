@@ -9,6 +9,8 @@
 #include <time.h>
 #include <signal.h>
 #include <errno.h>
+#include <format>
+
 #include "include/common.h"
 
 // Globalne zmienne do obsługi sygnałów
@@ -48,12 +50,12 @@ void wyswietl_status(Hala *hala, sem_t *sem) {
     printf("Kibice na hali: %d\n", hala->kibice_na_hali);
     printf("Otwarte kasy: %d\n", hala->otwarte_kasy);
     printf("Kolejka do kasy: %d\n", hala->rozmiar_kolejki_kasy);
-    printf("VIP w kolejce: %d\n", hala->vip_w_kolejce);
+    printf("VIP w kolejce: %d\n", hala->rozmiar_kolejki_kasy_vip);
     printf("Bilety w sektorach: ");
     for (int i = 0; i < LICZBA_SEKTOROW; i++) {
-        printf("[%d:%d] ", i, hala->bilety_w_sektorze[i]);
+        printf("[%d:%d] ", i, hala->sprzedane_bilety_w_sektorze[i]);
     }
-    printf("[VIP:%d]\n", hala->bilety_w_sektorze[SEKTOR_VIP]);
+    printf("[VIP:%d]\n", hala->sprzedane_bilety_w_sektorze[SEKTOR_VIP]);
     printf("===============\n\n");
     sem_post(sem);
 }
@@ -115,7 +117,7 @@ int main(int argc, char *argv[]) {
     memset(hala, 0, sizeof(Hala));
     hala->sprzedane_bilety = 0;
     hala->otwarte_kasy = 0;
-    hala->vip_w_kolejce = 0;
+    hala->rozmiar_kolejki_kasy_vip = 0;
     hala->kibice_na_hali = 0;
     hala->czas_meczu = 0;
     hala->mecz_rozpoczety = 0;
@@ -128,8 +130,8 @@ int main(int argc, char *argv[]) {
 
     // Inicjalizacja sektorów
     for (int i = 0; i < LICZBA_SEKTOROW + 1; i++) {
-        hala->bilety_w_sektorze[i] = 0;
-        hala->kibice_w_sektorze[i] = 0;
+        hala->sprzedane_bilety_w_sektorze[i] = 0;
+        hala->kibice_w_sektorze_ilosc[i] = 0;
     }
 
     // Inicjalizacja wejść do sektorów
@@ -153,9 +155,20 @@ int main(int argc, char *argv[]) {
         sprzatanie();
         return 1;
     }
-    sem_t *sem = g_sem;
+    sem_t *hala_sem = g_sem;
 
-    atexit(sprzatanie);
+    //atexit(sprzatanie);
+
+    // Semafor
+    sem_unlink("/kasy_sem");
+    g_sem = sem_open("/kasy_sem", O_CREAT | O_EXCL, 0600, 1);
+    if (g_sem == SEM_FAILED) {
+        perror("sem_open");
+        sprzatanie();
+        return 1;
+    }
+    sem_t *kasy_sem = g_sem;
+
 
     printf("[MAIN] Uruchamiam generator kas...\n");
     pid_t pid_kasy = fork();
@@ -164,12 +177,22 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     if (pid_kasy == 0) {
-        generator_kas(hala, sem);
+        generator_kas(hala, hala_sem);
         exit(0);
     }
 
     printf("[MAIN] Uruchamiam stanowiska kontroli...\n");
     for (int s = 0; s < LICZBA_SEKTOROW; s++) {
+        // Semafor
+        std::string sem_name = std::format("/sektor_sem_{}\n", s);
+        sem_unlink(sem_name.c_str());
+        g_sem = sem_open(sem_name.c_str(), O_CREAT | O_EXCL, 0600, 1);
+        if (g_sem == SEM_FAILED) {
+            perror("sem_open");
+            sprzatanie();
+            return 1;
+        }
+        sem_t *sektor_sem = g_sem;
         for (int st = 0; st < STANOWISKA_NA_SEKTOR; st++) {
             pid_t pid = fork();
             if (pid < 0) {
@@ -177,8 +200,7 @@ int main(int argc, char *argv[]) {
                 continue;
             }
             if (pid == 0) {
-                jest_procesem_potomnym = 1;
-                proces_stanowiska(s, st, hala, sem);
+                proces_stanowiska(s, st, hala, hala_sem);
                 exit(0);
             }
         }
@@ -202,17 +224,17 @@ int main(int argc, char *argv[]) {
             // int jest_dzieckiem = (rand() % 100) < 5; // 5% dzieci
             int id_opiekuna = jest_dzieckiem ? -1 : -1;
 
-            sem_wait(sem);
+            sem_wait(hala_sem);
             int idx = hala->liczba_kibiców++;
             Kibic *kibic = &hala->kibice[idx];
             *kibic = Kibic(i, druzyna, -1, 0, 0, 0, jest_dzieckiem, id_opiekuna);
-            sem_post(sem);
+            sem_post(hala_sem);
 
-            proces_kibica_z_kontrola(idx, kibic, hala, sem);
+            proces_kibica_z_kontrola(idx, kibic, hala, kasy_sem, hala_sem);
             exit(0);
         }
         wygenerowano_kibiców++;
-        usleep(30000 + rand() % 50000); // 30-80ms między kibicami
+        usleep(10000 + rand() % 10000); // 30-80ms między kibicami
     }
 
     printf("[MAIN] Generuję VIP-ów (%d)...\n", POJEMNOSC_VIP);
@@ -226,16 +248,14 @@ int main(int argc, char *argv[]) {
             jest_procesem_potomnym = 1;
             srand(time(NULL) ^ getpid());
 
-            sem_wait(sem);
+            sem_wait(hala_sem);
             int idx = hala->liczba_kibiców_VIP;
             hala->liczba_kibiców_VIP++;
             Kibic *kibic_vip = &hala->kibice_vip[idx];
             *kibic_vip = Kibic(1000 + i, 1);
-            kibic_vip->jest_vip = 1;
-            kibic_vip->sektor = SEKTOR_VIP;
-            sem_post(sem);
+            sem_post(hala_sem);
 
-            proces_kibica_vip(idx, kibic_vip, hala, sem);
+            proces_kibica_vip(idx, kibic_vip, hala, kasy_sem, hala_sem);
             exit(0);
         }
         usleep(100000 + rand() % 200000);
@@ -257,13 +277,13 @@ int main(int argc, char *argv[]) {
     // Monitorowanie
     int timeout = 180; // Zwiększ timeout
     while (!zakoncz && timeout > 0) {
-        wyswietl_status(hala, sem);
+        wyswietl_status(hala, hala_sem);
 
-        sem_wait(sem);
+        sem_wait(hala_sem);
         int na_hali = hala->kibice_na_hali;
         int sprzedane = hala->sprzedane_bilety;
         int vip_count = hala->liczba_kibiców_VIP;
-        sem_post(sem);
+        sem_post(hala_sem);
 
         // Sprawdź czy wszyscy z biletami są na hali
         if (na_hali >= sprzedane && sprzedane >= K_KIBICOW) {
@@ -280,16 +300,16 @@ int main(int argc, char *argv[]) {
     printf("=== PODSUMOWANIE SYMULACJI ===\n");
     printf("========================================\n");
 
-    sem_wait(sem);
+    sem_wait(hala_sem);
     printf("Kibice na hali: %d\n", hala->kibice_na_hali);
     printf("Sprzedane bilety: %d/%d\n", hala->sprzedane_bilety, K_KIBICOW);
     printf("VIP-ów: %d\n", hala->liczba_kibiców_VIP);
     printf("\nBilety w sektorach:\n");
     for (int i = 0; i < LICZBA_SEKTOROW; i++) {
-        printf("  Sektor %d: %d/%d\n", i, hala->bilety_w_sektorze[i], POJEMNOSC_SEKTORA);
+        printf("  Sektor %d: %d/%d\n", i, hala->sprzedane_bilety_w_sektorze[i], POJEMNOSC_SEKTORA);
     }
-    printf("  Sektor VIP: %d\n", hala->bilety_w_sektorze[SEKTOR_VIP]);
-    sem_post(sem);
+    printf("  Sektor VIP: %d\n", hala->sprzedane_bilety_w_sektorze[SEKTOR_VIP]);
+    sem_post(hala_sem);
 
     printf("\n[MAIN] Kończę procesy potomne...\n");
     kill(0, SIGTERM);

@@ -1,156 +1,166 @@
+#include <algorithm>
+
 #include "../include/common.h"
 
-void proces_kasy(int id, Hala *hala, sem_t *sem) {
+bool sprawdz_czy_zamknac_kase_bilety(int id, Hala *hala) {
+    if (hala->sprzedane_bilety >= K_KIBICOW) {
+        printf("[Kasa %d] Wszystkie bilety sprzedane - zamykam\n", id);
+        hala->otwarte_kasy--;
+        return true;
+    }
+    return false;
+}
+
+bool obsluz_vip(int id, Hala *hala) {
+    if (hala->rozmiar_kolejki_kasy_vip <= 0) {
+        return false;
+    }
+    int id_obslugiwanego_kibica = hala->kolejka_do_kasy_VIP[0];
+    Kibic* obslugiwany_kibic = &hala->kibice_vip[id_obslugiwanego_kibica];
+    hala->rozmiar_kolejki_kasy_vip--;
+
+    int liczba_biletow = 1;
+
+    while ((hala->sprzedane_bilety_w_sektorze[SEKTOR_VIP] + liczba_biletow > POJEMNOSC_VIP)) {
+        liczba_biletow--;
+    }
+    if (liczba_biletow == 0) {
+        printf("[Kasa %d] VIP %d - brak miejsc w sektorze VIP\n", id, obslugiwany_kibic->id);
+        return true;
+    }
+    hala->sprzedane_bilety_w_sektorze[SEKTOR_VIP] += liczba_biletow;
+    //hala->sprzedane_bilety += liczba_biletow;
+    printf("[Kasa %d] VIP - sprzedano %d bilet(ów) do sektora VIP\n", id, liczba_biletow);
+    obslugiwany_kibic->ma_bilet = 1;
+    obslugiwany_kibic->liczba_biletow = liczba_biletow;
+    return true;
+}
+
+bool sprawdz_czy_zamknac_kase_kolejka(int id, Hala *hala) {
+    // Zamknięcie kasy jeśli mało kibiców w kolejce (ale nie gdy są kibice do obsłużenia)
+    if (hala->rozmiar_kolejki_kasy < (K_KIBICOW / LICZBA_KAS) * (hala->otwarte_kasy - 1)
+        && hala->otwarte_kasy > 2
+        && id == hala->otwarte_kasy) {
+        hala->otwarte_kasy--;
+        printf("[Kasa %d] Zamykam (za mało kibiców, otwarte: %d)\n", id, hala->otwarte_kasy);
+        return true;
+        }
+    return false;
+}
+
+void przesun_kolejke(Hala *hala) {
+    for (int j = 0; j < hala->rozmiar_kolejki_kasy - 1; j++) {
+        hala->kolejka_do_kasy[j] = hala->kolejka_do_kasy[j + 1];
+    }
+    hala->rozmiar_kolejki_kasy--;
+}
+
+int znajdz_wolny_sektor(Hala *hala, int &liczba_biletow, int id_kibica) {
+    int sektor = rand() % 8;
+    int proby = 0;
+    while (hala->sprzedane_bilety_w_sektorze[sektor] + liczba_biletow > K_KIBICOW / 8) {
+        if (liczba_biletow == 0) {
+            return -1;
+        }
+        if (proby == 8) {
+            liczba_biletow--;
+            printf("[Kasa] Zmniejszam liczbę biletów dla [Kibica %d] do %d z powodu braku miejsc\n", id_kibica, liczba_biletow);
+            proby = 0;
+        }
+        sektor = (sektor + 1) % 8;
+        proby++;
+    }
+    return sektor;
+}
+
+void proces_kasy(int id, Hala *hala, sem_t *kasa_sem) {
     printf("[Kasa %d] Otwarcie\n", id);
 
     while (1) {
-        sem_wait(sem);
 
-        // Sprawdź czy wszystko sprzedane I kolejka pusta
-        if (hala->sprzedane_bilety >= K_KIBICOW && hala->rozmiar_kolejki_kasy == 0) {
-            printf("[Kasa %d] Wszystkie bilety sprzedane - zamykam\n", id);
-            hala->otwarte_kasy--;
-            sem_post(sem);
+        sem_wait(kasa_sem);
+
+        if (sprawdz_czy_zamknac_kase_bilety(id, hala)) {
+            sem_post(kasa_sem);
             exit(0);
         }
 
-        // Priorytet dla VIP-ów
-        if (hala->vip_w_kolejce > 0) {
-            hala->vip_w_kolejce--;
-
-            int sektor = 8; // VIP-owie idą do sektora VIP
-            int liczba_biletow = 0;
-
-            if (hala->bilety_w_sektorze[sektor] + liczba_biletow <= K_KIBICOW / 8) {
-                hala->bilety_w_sektorze[sektor] += liczba_biletow;
-                hala->sprzedane_bilety += liczba_biletow;
-                printf("[Kasa %d] VIP - sprzedano %d bilet(ów) do sektora VIP\n", id, liczba_biletow);
-            } else {
-                printf("[Kasa %d] VIP - brak miejsc w sektorze VIP\n", id);
-            }
-            sem_post(sem);
+        if (obsluz_vip(id, hala)) {
+            sem_post(kasa_sem);
             usleep(500000);
             continue;
         }
 
-        // Zamknięcie kasy jeśli mało kibiców w kolejce (ale nie gdy są kibice do obsłużenia)
-        if (hala->rozmiar_kolejki_kasy < (K_KIBICOW / 10) * (hala->otwarte_kasy - 1)
-            && hala->otwarte_kasy > 2
-            && id == hala->otwarte_kasy
-            && hala->sprzedane_bilety < K_KIBICOW) {  // Dodano warunek
-            hala->otwarte_kasy--;
-            printf("[Kasa %d] Zamykam (za mało kibiców, otwarte: %d)\n", id, hala->otwarte_kasy);
-            sem_post(sem);
+        if (sprawdz_czy_zamknac_kase_kolejka(id, hala)) {
+            sem_post(kasa_sem);
             exit(0);
         }
 
         // Obsługa normalnego kibica
         if (hala->rozmiar_kolejki_kasy > 0) {
-            // Sprawdź czy są jeszcze bilety PRZED wyjęciem kibica z kolejki
-            if (hala->sprzedane_bilety >= K_KIBICOW) {
-                // Brak biletów - usuń kibica z kolejki i powiadom go
-                int idx = hala->kolejka_do_kasy[0];
-                Kibic* kibic = &hala->kibice[idx];
+            int id_obslugiwanego_kibica = hala->kolejka_do_kasy[0];
+            Kibic* obslugiwany_kibic = &hala->kibice[id_obslugiwanego_kibica];
 
-                // Przesuń kolejkę
-                for (int j = 0; j < hala->rozmiar_kolejki_kasy - 1; j++) {
-                    hala->kolejka_do_kasy[j] = hala->kolejka_do_kasy[j + 1];
-                }
-                hala->rozmiar_kolejki_kasy--;
-
-                kibic->ma_bilet = 0;  // Oznacz że nie dostał biletu
-                printf("[Kasa %d] Kibic %d - brak biletów, odchodzi\n", id, kibic->id);
-
-                sem_post(sem);
-                usleep(100000);
-                continue;
-            }
-
-            int idx = hala->kolejka_do_kasy[0];
-            Kibic* kibic = &hala->kibice[idx];
-
-            // Przesuń kolejkę
-            for (int j = 0; j < hala->rozmiar_kolejki_kasy - 1; j++) {
-                hala->kolejka_do_kasy[j] = hala->kolejka_do_kasy[j + 1];
-            }
-            hala->rozmiar_kolejki_kasy--;
-
-            // LOSOWY SEKTOR
-            int sektor = rand() % 8;
-            int proby = 0;
-            while (hala->bilety_w_sektorze[sektor] >= K_KIBICOW / 8 && proby < 8) {
-                sektor = (sektor + 1) % 8;
-                proby++;
-            }
-
-            if (proby >= 8) {
-                printf("[Kasa %d] Brak miejsc w żadnym sektorze dla kibica %d\n", id, kibic->id);
-                kibic->ma_bilet = 0;
-                sem_post(sem);
-                continue;
-            }
+            przesun_kolejke(hala);
 
             int liczba_biletow = 1;
 
-            // Sprawdź dostępność w sektorze
-            if (hala->bilety_w_sektorze[sektor] + liczba_biletow > K_KIBICOW / 8) {
-                liczba_biletow = K_KIBICOW / 8 - hala->bilety_w_sektorze[sektor];
+            int sektor = znajdz_wolny_sektor(hala, liczba_biletow, obslugiwany_kibic->id);
+            if (sektor == -1) {
+                printf("[Kasa %d] Brak miejsc w żadnym sektorze dla kibica %d\n", id, obslugiwany_kibic->id);
+                obslugiwany_kibic->ma_bilet = 0;
+                przesun_kolejke(hala);
+                sem_post(kasa_sem);
+                continue;
             }
 
-            // Sprawdź globalny limit
-            if (hala->sprzedane_bilety + liczba_biletow > K_KIBICOW) {
-                liczba_biletow = K_KIBICOW - hala->sprzedane_bilety;
+
+            hala->sprzedane_bilety_w_sektorze[sektor] += liczba_biletow;
+            hala->sprzedane_bilety += liczba_biletow;
+            obslugiwany_kibic->ma_bilet = 1;
+            obslugiwany_kibic->liczba_biletow = liczba_biletow;
+            obslugiwany_kibic->sektor = sektor;
+
+            printf("[Kasa %d] Kibic %d - %d bilet(ów), sektor %d (sprzedano: %d/%d)\n",
+                   id, obslugiwany_kibic->id, liczba_biletow, sektor,
+                   hala->sprzedane_bilety, K_KIBICOW);
+
+            if (obslugiwany_kibic->jest_dzieckiem && liczba_biletow == 1) {
+                hala->dzieci_bez_opiekuna[hala->rozmiar_dzieci++] = id_obslugiwanego_kibica;
             }
 
-            if (liczba_biletow > 0) {
-                hala->bilety_w_sektorze[sektor] += liczba_biletow;
-                hala->sprzedane_bilety += liczba_biletow;
-                kibic->ma_bilet = 1;
-                kibic->liczba_biletow = liczba_biletow;
-                kibic->sektor = sektor;
-
-                printf("[Kasa %d] Kibic %d - %d bilet(ów), sektor %d (sprzedano: %d/%d)\n",
-                       id, kibic->id, liczba_biletow, sektor,
-                       hala->sprzedane_bilety, K_KIBICOW);
-
-                if (kibic->jest_dzieckiem && liczba_biletow == 1) {
-                    hala->dzieci_bez_opiekuna[hala->rozmiar_dzieci++] = idx;
-                }
-            } else {
-                kibic->ma_bilet = 0;
-                printf("[Kasa %d] Kibic %d - brak biletów\n", id, kibic->id);
-            }
-
-            sem_post(sem);
+            sem_post(kasa_sem);
             usleep(300000);
         } else {
-            sem_post(sem);
+            sem_post(kasa_sem);
             usleep(100000);
         }
     }
 }
 
-void generator_kas(Hala *hala, sem_t *sem) {
-    sem_wait(sem);
+void generator_kas(Hala *hala, sem_t *k_sem) {
+    printf("[Generator] Uruchamiam generowanie kas...\n");
+
+    sem_wait(k_sem);
     for (int i = 0; i < 2; i++) {
         hala->otwarte_kasy++;
         int id_kasy = hala->otwarte_kasy;
         if (fork() == 0) {
-            sem_post(sem);
-            proces_kasy(id_kasy, hala, sem);
+            sem_post(k_sem);
+            proces_kasy(id_kasy, hala, k_sem);
             exit(0);
         }
         printf("[Generator] Otwieram kasę %d\n", id_kasy);
     }
-    sem_post(sem);
+    sem_post(k_sem);
 
     while (1) {
         usleep(200000);
 
-        sem_wait(sem);
+        sem_wait(k_sem);
         // Zakończ gdy wszystko sprzedane I kolejka pusta
         if (hala->sprzedane_bilety >= K_KIBICOW && hala->rozmiar_kolejki_kasy == 0) {
-            sem_post(sem);
+            sem_post(k_sem);
             break;
         }
 
@@ -162,13 +172,13 @@ void generator_kas(Hala *hala, sem_t *sem) {
             hala->otwarte_kasy++;
             int id_kasy = hala->otwarte_kasy;
             if (fork() == 0) {
-                sem_post(sem);
-                proces_kasy(id_kasy, hala, sem);
+                sem_post(k_sem);
+                proces_kasy(id_kasy, hala, k_sem);
                 exit(0);
             }
             printf("[Generator] Otwieram kasę %d (kolejka: %d)\n", id_kasy, hala->rozmiar_kolejki_kasy);
         }
-        sem_post(sem);
+        sem_post(k_sem);
     }
 
     printf("[Generator] Koniec sprzedaży biletów\n");

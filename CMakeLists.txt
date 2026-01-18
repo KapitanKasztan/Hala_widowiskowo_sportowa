@@ -10,5 +10,6 @@ add_executable(Hala_widowiskowo_sportowa main.cpp
         src/pracownik_techniczny.cpp
         src/kasjer.cpp
         src/kierownik.cpp
+        include/logger.h
 
 )
