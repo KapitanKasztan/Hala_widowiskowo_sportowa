@@ -54,6 +54,9 @@ void proces_stanowiska(int sektor_id, int stanowisko_id, Hala *hala, sem_t *sekt
     int aktualna_druzyna;
     int id_kibicow[MAX_OSOB_NA_STANOWISKU];
     int liczba_osob = 0;
+    WejscieDoSektora *wejscie = &hala->wejscia[sektor_id];
+    Stanowisko *stan = &wejscie->stanowiska[stanowisko_id];
+    // sem_init(&wejscie->sektor_sem, 1, 0);
     while (1) {
         sem_wait(sektor_sem);
 
@@ -70,8 +73,6 @@ void proces_stanowiska(int sektor_id, int stanowisko_id, Hala *hala, sem_t *sekt
             exit(0);
         }
 
-        WejscieDoSektora *wejscie = &hala->wejscia[sektor_id];
-        Stanowisko *stan = &wejscie->stanowiska[stanowisko_id];
 
         // Sprawdź czy wstrzymane przez kierownika
         if (wejscie->wstrzymane || wstrzymane) {
@@ -86,6 +87,8 @@ void proces_stanowiska(int sektor_id, int stanowisko_id, Hala *hala, sem_t *sekt
             hala->kibice_na_hali++;
             Kibic *kibic = &hala->kibice[id_kibicow[0]];
             kibic->na_hali = 1;
+            sem_post(&kibic->na_hali_sem);
+            kibic->na_hali = 1;
 
             sektor_logger.log(INFO, std::format("[Kibic {}] Wpuszczony do sektora {} ze stanowiska {}", kibic->id, sektor_id, stanowisko_id));
             for (int i = 0; i < liczba_osob - 1; i++) {
@@ -94,7 +97,7 @@ void proces_stanowiska(int sektor_id, int stanowisko_id, Hala *hala, sem_t *sekt
             liczba_osob--;
             id_kibicow[-(MAX_OSOB_NA_STANOWISKU-liczba_osob)] = -1;
         }
-        sektor_logger.log(INFO, std::format("[Stanowisko {}-{}] Na stanowisku [{} {} {}]", sektor_id, stanowisko_id, id_kibicow[0], id_kibicow[1], id_kibicow[2]));
+        //sektor_logger.log(INFO, std::format("[Stanowisko {}-{}] Na stanowisku [{} {} {}]", sektor_id, stanowisko_id, id_kibicow[0], id_kibicow[1], id_kibicow[2]));
 
         if (wejscie->rozmiar_kolejki > 0) {
             for (int i = 0; i < wejscie->rozmiar_kolejki && liczba_osob < MAX_OSOB_NA_STANOWISKU; i++) {

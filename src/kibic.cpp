@@ -1,30 +1,53 @@
+#include <format>
+
 #include "../include/common.h"
 
-void proces_kibica_vip(int id, Kibic *kibic ,Hala *hala, sem_t *sem_kasa, sem_t *sem_hala) {
-    sem_wait(sem_kasa);
-    hala->kolejka_do_kasy_VIP[hala->rozmiar_kolejki_kasy_vip++] = id;
+void generator_kas(Hala *hala, sem_t *k_sem) {
+    printf("[Generator] Uruchamiam generowanie kas...\n");
 
-    printf("[VIP %d] Żądam obsługi (VIP: %d)\n", id, hala->rozmiar_kolejki_kasy_vip);
-    sem_post(sem_kasa);
-
-
-    while (!kibic->ma_bilet) {
-        usleep(100000);
-        if (hala->sprzedane_bilety_w_sektorze[SEKTOR_VIP] >= POJEMNOSC_VIP) {
-            printf("Brak biletów. Odchodze!\n");
+    sem_wait(k_sem);
+    for (int i = 0; i < 2; i++) {
+        hala->otwarte_kasy++;
+        int id_kasy = hala->otwarte_kasy;
+        if (fork() == 0) {
+            sem_post(k_sem);
+            proces_kasy(id_kasy, hala, k_sem);
             exit(0);
         }
-
+        printf("[Generator] Otwieram kasę %d\n", id_kasy);
     }
-    printf("[VIP %d] Wchodzę osobnym wejściem do sektora VIP (bez kontroli)\n", id);
+    sem_post(k_sem);
 
-    sem_wait(sem_hala);
-    hala->kibice_na_hali++;
-    hala->kibice_w_sektorze[SEKTOR_VIP][hala->kibice_w_sektorze_ilosc[SEKTOR_VIP]++] = kibic->id;
-    sem_post(sem_hala);
+    while (1) {
+        usleep(200000);
 
-    printf("[VIP %d] Jestem na hali!\n", id);
+        sem_wait(k_sem);
+        // Zakończ gdy wszystko sprzedane I kolejka pusta
+        if (hala->sprzedane_bilety >= K_KIBICOW && hala->rozmiar_kolejki_kasy == 0) {
+            sem_post(k_sem);
+            break;
+        }
+
+        int wymagane_kasy = (hala->rozmiar_kolejki_kasy / (K_KIBICOW / 10)) + 1;
+        if (wymagane_kasy < 2) wymagane_kasy = 2;
+        if (wymagane_kasy > LICZBA_KAS) wymagane_kasy = LICZBA_KAS;
+
+        if (hala->otwarte_kasy < wymagane_kasy) {
+            hala->otwarte_kasy++;
+            int id_kasy = hala->otwarte_kasy;
+            if (fork() == 0) {
+                sem_post(k_sem);
+                proces_kasy(id_kasy, hala, k_sem);
+                exit(0);
+            }
+            printf("[Generator] Otwieram kasę %d (kolejka: %d)\n", id_kasy, hala->rozmiar_kolejki_kasy);
+        }
+        sem_post(k_sem);
+    }
+
+    printf("[Generator] Koniec sprzedaży biletów\n");
 }
+
 
 void proces_kibica_z_kontrola(int moj_idx, Kibic *kibic, Hala *hala, sem_t *kasa_sem, sem_t *hala_sem) {
     sem_wait(kasa_sem);
@@ -37,16 +60,13 @@ void proces_kibica_z_kontrola(int moj_idx, Kibic *kibic, Hala *hala, sem_t *kasa
            kibic->jest_dzieckiem ? " [DZIECKO]" : "");
 
     // Czekaj na biletjak
-    while (!kibic->ma_bilet) {
-        usleep(100000);
-        if (hala->sprzedane_bilety >= K_KIBICOW) {
-            printf("Brak biletów. Odchodze!\n");
-            exit(0);
-        }
-
+    if (hala->sprzedane_bilety >= K_KIBICOW) {
+        printf("Brak biletów. Odchodze!\n");
+        exit(0);
     }
+    sem_wait(&kibic->bilet_sem);
 
-    // // Jeśli dziecko z 1 biletem - musi poczekać na opiekuna
+    // Jeśli dziecko z 1 biletem - musi poczekać na opiekuna
     // if (kibic->jest_dzieckiem && kibic->liczba_biletow == 1) {
     //     printf("[Dziecko %d] Czekam na opiekuna...\n", kibic->id);
     //
@@ -78,8 +98,7 @@ void proces_kibica_z_kontrola(int moj_idx, Kibic *kibic, Hala *hala, sem_t *kasa
     sem_post(hala_sem);
 
     // Czekaj na przejście kontroli
-    while (!kibic->na_hali) {
-        usleep(200000);
-    }
+    sem_wait(&kibic->na_hali_sem);
+
     printf("[Kibic %d] Jestem na hali w sektorze %d!\n", kibic->id, kibic->sektor);
 }

@@ -11,5 +11,6 @@ add_executable(Hala_widowiskowo_sportowa main.cpp
         src/kasjer.cpp
         src/kierownik.cpp
         include/logger.h
+        src/kibic_vip.cpp
 
 )

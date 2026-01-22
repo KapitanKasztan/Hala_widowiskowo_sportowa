@@ -41,6 +41,9 @@ public:
     int liczba_biletow;
     int szuka_dziecka;
     int na_hali;
+    sem_t bilet_sem;
+    sem_t na_hali_sem;
+
     Kibic* towarzysz;
     Kibic* opiekun;
 
@@ -53,19 +56,28 @@ public:
         id(p_id), druzyna(p_druzyna), sektor(p_sektor), jest_vip(p_jest_vip),
         jest_dzieckiem(p_jest_dzieckiem), id_opiekuna(p_id_opiekuna),
         ma_bilet(p_ma_bilet), przepuscil(p_przepuscil), liczba_biletow(0),
-        szuka_dziecka(0), na_hali(0), towarzysz(nullptr), opiekun(nullptr) {}
+        szuka_dziecka(0), na_hali(0), towarzysz(nullptr), opiekun(nullptr){
+        if (sem_init(&bilet_sem, 0, 0) == -1) perror("sem_init");
+        if (sem_init(&na_hali_sem, 0, 0) == -1) perror("sem_init");
+    }
+
 
     Kibic(int p_id, int p_druzyna, int p_sektor) :
         id(p_id), druzyna(p_druzyna), sektor(p_sektor), jest_vip(0),
         jest_dzieckiem(0), id_opiekuna(-1), ma_bilet(1), przepuscil(0),
         liczba_biletow(1), szuka_dziecka(0), na_hali(0),
-        towarzysz(nullptr), opiekun(nullptr) {}
+        towarzysz(nullptr), opiekun(nullptr) {
+        if (sem_init(&na_hali_sem, 0, 0) == -1) perror("sem_init");
+
+    }
 
     Kibic(int p_id, int VIP) :
         id(p_id), druzyna(0), sektor(SEKTOR_VIP), jest_vip(VIP),
         jest_dzieckiem(0), id_opiekuna(-1), ma_bilet(0), przepuscil(0),
         liczba_biletow(0), szuka_dziecka(0), na_hali(0),
-        towarzysz(nullptr), opiekun(nullptr) {}
+        towarzysz(nullptr), opiekun(nullptr) {
+        if (sem_init(&bilet_sem, 0, 0) == -1) perror("sem_init");
+    }
 };
 
 typedef struct {
@@ -80,6 +92,8 @@ typedef struct {
     int rozmiar_kolejki;
     int wstrzymane;
     int kibice_w_sektorze[K_KIBICOW/LICZBA_SEKTOROW];
+    sem_t sektor_sem;
+
 } WejscieDoSektora;
 
 typedef struct {

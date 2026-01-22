@@ -33,6 +33,7 @@ bool obsluz_vip(int id, Hala *hala) {
     printf("[Kasa %d] VIP - sprzedano %d bilet(ów) do sektora VIP\n", id, liczba_biletow);
     obslugiwany_kibic->ma_bilet = 1;
     obslugiwany_kibic->liczba_biletow = liczba_biletow;
+    sem_post(&obslugiwany_kibic->bilet_sem);
     return true;
 }
 
@@ -119,6 +120,7 @@ void proces_kasy(int id, Hala *hala, sem_t *kasa_sem) {
             hala->sprzedane_bilety += liczba_biletow;
             obslugiwany_kibic->ma_bilet = 1;
             obslugiwany_kibic->liczba_biletow = liczba_biletow;
+            sem_post(&obslugiwany_kibic->bilet_sem);
             obslugiwany_kibic->sektor = sektor;
 
             printf("[Kasa %d] Kibic %d - %d bilet(ów), sektor %d (sprzedano: %d/%d)\n",
@@ -138,48 +140,26 @@ void proces_kasy(int id, Hala *hala, sem_t *kasa_sem) {
     }
 }
 
-void generator_kas(Hala *hala, sem_t *k_sem) {
-    printf("[Generator] Uruchamiam generowanie kas...\n");
-
-    sem_wait(k_sem);
-    for (int i = 0; i < 2; i++) {
-        hala->otwarte_kasy++;
-        int id_kasy = hala->otwarte_kasy;
-        if (fork() == 0) {
-            sem_post(k_sem);
-            proces_kasy(id_kasy, hala, k_sem);
-            exit(0);
-        }
-        printf("[Generator] Otwieram kasę %d\n", id_kasy);
-    }
-    sem_post(k_sem);
-
-    while (1) {
-        usleep(200000);
-
-        sem_wait(k_sem);
-        // Zakończ gdy wszystko sprzedane I kolejka pusta
-        if (hala->sprzedane_bilety >= K_KIBICOW && hala->rozmiar_kolejki_kasy == 0) {
-            sem_post(k_sem);
-            break;
-        }
-
-        int wymagane_kasy = (hala->rozmiar_kolejki_kasy / (K_KIBICOW / 10)) + 1;
-        if (wymagane_kasy < 2) wymagane_kasy = 2;
-        if (wymagane_kasy > LICZBA_KAS) wymagane_kasy = LICZBA_KAS;
-
-        if (hala->otwarte_kasy < wymagane_kasy) {
-            hala->otwarte_kasy++;
-            int id_kasy = hala->otwarte_kasy;
-            if (fork() == 0) {
-                sem_post(k_sem);
-                proces_kasy(id_kasy, hala, k_sem);
-                exit(0);
-            }
-            printf("[Generator] Otwieram kasę %d (kolejka: %d)\n", id_kasy, hala->rozmiar_kolejki_kasy);
-        }
-        sem_post(k_sem);
-    }
-
-    printf("[Generator] Koniec sprzedaży biletów\n");
-}
+// int main(int argc, char *argv[]) {
+//     if (argc < 4) {
+//         fprintf(stderr, "Usage: %s <shm_id> <hala_sem_name> <kasy_sem_name>\n", argv[0]);
+//         return 1;
+//     }
+//
+//     char *endptr = NULL;
+//     long shm_l = strtol(argv[1], &endptr, 10);
+//     if (endptr == argv[1] || shm_l < 0) {
+//         fprintf(stderr, "Invalid shm id: %s\n", argv[1]);
+//         return 1;
+//     }
+//     int shm_id = (int)shm_l;
+//     const char *hala_sem_name = argv[2];
+//     const char *kasy_sem_name = argv[3];
+//
+//     Hala *hala = (Hala*) shmat(shm_id, NULL, 0);
+//     if (hala == (void*) -1) {
+//         perror("shmat kasjer");
+//         return 1;
+//     }
+//     sem_t *hala_sem = sem_open(hala_sem_name, 0);
+// }
