@@ -1,67 +1,26 @@
+#include <filesystem>
 #include <format>
 
 #include "../include/common.h"
 
-void generator_kas(Hala *hala, sem_t *k_sem) {
-    printf("[Generator] Uruchamiam generowanie kas...\n");
 
-    sem_wait(k_sem);
-    for (int i = 0; i < 2; i++) {
-        hala->otwarte_kasy++;
-        int id_kasy = hala->otwarte_kasy;
-        if (fork() == 0) {
-            sem_post(k_sem);
-            proces_kasy(id_kasy, hala, k_sem);
-            exit(0);
-        }
-        printf("[Generator] Otwieram kasę %d\n", id_kasy);
+void proces_kibica_z_kontrola(int moj_idx, Kibic *kibic, Hala *hala) {
+    std::string logs_dir = "tmp_kibic_logs";
+    std::error_code ec;
+    std::filesystem::create_directories(logs_dir, ec);
+    if (ec) {
+        fprintf(stderr, "Failed to create logs directory `%s`: %s\n", logs_dir.c_str(), ec.message().c_str());
     }
-    sem_post(k_sem);
-
-    while (1) {
-        usleep(200000);
-
-        sem_wait(k_sem);
-        // Zakończ gdy wszystko sprzedane I kolejka pusta
-        if (hala->sprzedane_bilety >= K_KIBICOW && hala->rozmiar_kolejki_kasy == 0) {
-            sem_post(k_sem);
-            break;
-        }
-
-        int wymagane_kasy = (hala->rozmiar_kolejki_kasy / (K_KIBICOW / 10)) + 1;
-        if (wymagane_kasy < 2) wymagane_kasy = 2;
-        if (wymagane_kasy > LICZBA_KAS) wymagane_kasy = LICZBA_KAS;
-
-        if (hala->otwarte_kasy < wymagane_kasy) {
-            hala->otwarte_kasy++;
-            int id_kasy = hala->otwarte_kasy;
-            if (fork() == 0) {
-                sem_post(k_sem);
-                proces_kasy(id_kasy, hala, k_sem);
-                exit(0);
-            }
-            printf("[Generator] Otwieram kasę %d (kolejka: %d)\n", id_kasy, hala->rozmiar_kolejki_kasy);
-        }
-        sem_post(k_sem);
-    }
-
-    printf("[Generator] Koniec sprzedaży biletów\n");
-}
-
-
-void proces_kibica_z_kontrola(int moj_idx, Kibic *kibic, Hala *hala, sem_t *kasa_sem, sem_t *hala_sem) {
-    sem_wait(kasa_sem);
+    std::string logger_filename = std::format("{}/kibic_{}.log", logs_dir, kibic->id);
+    Logger kibic_logger(logger_filename); // Create logger instance
+    sem_wait(&hala->main_sem);
     hala->kolejka_do_kasy[hala->rozmiar_kolejki_kasy++] = moj_idx;
     int pozycja_kasa = hala->rozmiar_kolejki_kasy;
-    sem_post(kasa_sem);
-
-    printf("[Kibic %d] Czekam w kolejce do kasy (pozycja: %d)%s\n",
-           kibic->id, pozycja_kasa,
-           kibic->jest_dzieckiem ? " [DZIECKO]" : "");
-
+    sem_post(&hala->main_sem);
+    kibic_logger.log(INFO, std::format("[Kibic {}] Czekam w kolejce do kasy (pozycja: {}){}\n", kibic->id, pozycja_kasa, kibic->jest_dzieckiem ? " [DZIECKO]" : ""));
     // Czekaj na biletjak
     if (hala->sprzedane_bilety >= K_KIBICOW) {
-        printf("Brak biletów. Odchodze!\n");
+        kibic_logger.log(INFO,"Brak biletów. Odchodze!\n");
         exit(0);
     }
     sem_wait(&kibic->bilet_sem);
@@ -77,11 +36,10 @@ void proces_kibica_z_kontrola(int moj_idx, Kibic *kibic, Hala *hala, sem_t *kasa
     //     printf("[Dziecko %d] Mój opiekun to kibic %d\n", kibic->id, kibic->opiekun->id);
     // }
 
-    printf("[Kibic %d] Mam %d bilet(y), idę do sektora %d\n",
-           kibic->id, kibic->liczba_biletow, kibic->sektor);
+    kibic_logger.log(INFO, std::format("[Kibic {}] Mam {} bilet(y), idę do sektora {}\n", kibic->id, kibic->liczba_biletow, kibic->sektor));
 
     // Idź do wejścia sektora
-    sem_wait(hala_sem);
+    sem_wait(&hala->main_sem);
     WejscieDoSektora *wejscie = &hala->wejscia[kibic->sektor];
     wejscie->kolejka_do_kontroli[wejscie->rozmiar_kolejki++] = moj_idx;
     int pozycja = wejscie->rozmiar_kolejki;  // Pozycja to rozmiar po dodaniu
@@ -92,13 +50,30 @@ void proces_kibica_z_kontrola(int moj_idx, Kibic *kibic, Hala *hala, sem_t *kasa
         wejscie->kolejka_do_kontroli[wejscie->rozmiar_kolejki++] = tow_idx;
 
         if (kibic->jest_dzieckiem) {
-            printf("[Dziecko %d] Wchodzę z opiekunem %d\n", kibic->id, kibic->towarzysz->id);
+            kibic_logger.log(INFO, std::format("[Dziecko {}] Wchodzę z opiekunem {}\n", kibic->id, kibic->towarzysz->id));
         }
     }
-    sem_post(hala_sem);
+    sem_post(&hala->main_sem);
 
     // Czekaj na przejście kontroli
     sem_wait(&kibic->na_hali_sem);
 
-    printf("[Kibic %d] Jestem na hali w sektorze %d!\n", kibic->id, kibic->sektor);
+    kibic_logger.log(INFO, std::format("[Kibic {}] Jestem na hali w sektorze {}!\n", kibic->id, kibic->sektor));
+}
+
+int main(int argc, char *argv[]) {
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s <idx> <shm_id>\n", argv[0]);
+        return 1;
+    }
+    int idx = atoi(argv[1]);
+    int shm_id = atoi(argv[2]);
+    Hala* hala = (Hala*)shmat(shm_id, NULL, 0);
+    if (hala == (void*)-1) {
+        perror("shmat");
+        return 1;
+    }
+    Kibic *kibic = &hala->kibice[idx];
+    proces_kibica_z_kontrola(idx, kibic, hala);
+    return 0;
 }

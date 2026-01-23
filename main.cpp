@@ -45,8 +45,8 @@ void sprzatanie() {
     printf("[MAIN] Zasoby zwolnione\n");
 }
 
-void wyswietl_status(Hala *hala, sem_t *sem) {
-    sem_wait(sem);
+void wyswietl_status(Hala *hala) {
+    sem_wait(&hala->main_sem);
     printf("\n=== STATUS ===\n");
     printf("Sprzedane bilety: %d/%d\n", hala->sprzedane_bilety, K_KIBICOW);
     printf("Kibice na hali: %d\n", hala->kibice_na_hali);
@@ -59,7 +59,63 @@ void wyswietl_status(Hala *hala, sem_t *sem) {
     }
     printf("[VIP:%d]\n", hala->sprzedane_bilety_w_sektorze[SEKTOR_VIP]);
     printf("===============\n\n");
-    sem_post(sem);
+    sem_post(&hala->main_sem);
+}
+
+void generator_kas(Hala *hala) {
+    printf("[Generator] Uruchamiam generowanie kas...\n");
+
+    sem_wait(&hala->main_sem);
+    for (int i = 0; i < 2; i++) {
+        hala->otwarte_kasy++;
+        int id_kasy = hala->otwarte_kasy;
+        if (fork() == 0) {
+            char id_kasy_str[16];
+            char shm_id_str[16];
+            snprintf(id_kasy_str, sizeof(id_kasy_str), "%d", id_kasy);
+            snprintf(shm_id_str, sizeof(shm_id_str), "%d", hala->g_shm_id);
+            sem_post(&hala->main_sem);
+            execl("./kasjer", "kasjer", id_kasy_str, shm_id_str, (char*)NULL);
+            perror("execl kasjer");
+            exit(1);
+        }
+        printf("[Generator] Otwieram kasę %d\n", id_kasy);
+    }
+    sem_post(&hala->main_sem);
+
+    while (1) {
+        usleep(200000);
+
+        sem_wait(&hala->main_sem);
+        // Zakończ gdy wszystko sprzedane I kolejka pusta
+        if (hala->sprzedane_bilety >= K_KIBICOW && hala->rozmiar_kolejki_kasy == 0) {
+            sem_post(&hala->main_sem);
+            break;
+        }
+
+        int wymagane_kasy = (hala->rozmiar_kolejki_kasy / (K_KIBICOW / 10)) + 1;
+        if (wymagane_kasy < 2) wymagane_kasy = 2;
+        if (wymagane_kasy > LICZBA_KAS) wymagane_kasy = LICZBA_KAS;
+
+        if (hala->otwarte_kasy < wymagane_kasy) {
+            hala->otwarte_kasy++;
+            int id_kasy = hala->otwarte_kasy;
+            if (fork() == 0) {
+                char id_kasy_str[16];
+                char shm_id_str[16];
+                snprintf(id_kasy_str, sizeof(id_kasy_str), "%d", id_kasy);
+                snprintf(shm_id_str, sizeof(shm_id_str), "%d", hala->g_shm_id);
+                sem_post(&hala->main_sem);
+                execl("./kasjer", "kasjer", id_kasy_str, shm_id_str, (char*)NULL);
+                perror("execl kasjer");
+                exit(1);
+            }
+            printf("[Generator] Otwieram kasę %d (kolejka: %d)\n", id_kasy, hala->rozmiar_kolejki_kasy);
+        }
+        sem_post(&hala->main_sem);
+    }
+
+    printf("[Generator] Koniec sprzedaży biletów\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -129,6 +185,8 @@ int main(int argc, char *argv[]) {
     hala->liczba_kibiców_VIP = 0;
     hala->rozmiar_kolejki_kasy = 0;
     hala->rozmiar_dzieci = 0;
+    sem_init(&hala->main_sem, 1, 0);
+    hala->g_shm_id = g_shm_id;
 
     // Inicjalizacja sektorów
     for (int i = 0; i < LICZBA_SEKTOROW + 1; i++) {
@@ -148,16 +206,6 @@ int main(int argc, char *argv[]) {
             }
         }
     }
-
-    // Semafor
-    sem_unlink("/hala_sem");
-    g_sem = sem_open("/hala_sem", O_CREAT | O_EXCL, 0600, 1);
-    if (g_sem == SEM_FAILED) {
-        perror("sem_open");
-        sprzatanie();
-        return 1;
-    }
-    sem_t *hala_sem = g_sem;
 
     //atexit(sprzatanie);
 
@@ -179,22 +227,12 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     if (pid_kasy == 0) {
-        generator_kas(hala, hala_sem);
+        generator_kas(hala);
         exit(0);
     }
 
     printf("[MAIN] Uruchamiam stanowiska kontroli...\n");
     for (int s = 0; s < LICZBA_SEKTOROW; s++) {
-        // Semafor
-        std::string sem_name = std::format("/sektor_sem_{}\n", s);
-        sem_unlink(sem_name.c_str());
-        g_sem = sem_open(sem_name.c_str(), O_CREAT | O_EXCL, 0600, 1);
-        if (g_sem == SEM_FAILED) {
-            perror("sem_open");
-            sprzatanie();
-            return 1;
-        }
-        sem_t *sektor_sem = g_sem;
         for (int st = 0; st < STANOWISKA_NA_SEKTOR; st++) {
             pid_t pid = fork();
             if (pid < 0) {
@@ -202,11 +240,17 @@ int main(int argc, char *argv[]) {
                 continue;
             }
             if (pid == 0) {
-                proces_stanowiska(s, st, hala, hala_sem);
-                exit(0);
+                char sektor_str[16], stanowisko_str[16], shm_id_str[16];
+                snprintf(sektor_str, sizeof(sektor_str), "%d", s);
+                snprintf(stanowisko_str, sizeof(stanowisko_str), "%d", st);
+                snprintf(shm_id_str, sizeof(shm_id_str), "%d", hala->g_shm_id);
+                execl("./pracownik_techniczny", "pracownik_techniczny", sektor_str, stanowisko_str, shm_id_str, (char*)NULL);
+                perror("execl pracownik_techniczny");
+                exit(1);
             }
         }
     }
+
 
     sleep(1); // Daj czas na uruchomienie kas i stanowisk
 
@@ -219,25 +263,16 @@ int main(int argc, char *argv[]) {
             continue;
         }
         if (pid == 0) {
-            jest_procesem_potomnym = 1;
-            srand(time(NULL) ^ getpid());
-            int druzyna = rand() % 2;
-            int jest_dzieckiem = 0; // 5% dzieci
-            // int jest_dzieckiem = (rand() % 100) < 5; // 5% dzieci
-            int id_opiekuna = jest_dzieckiem ? -1 : -1;
-
-            sem_wait(hala_sem);
-            int idx = hala->liczba_kibiców++;
-            Kibic *kibic = &hala->kibice[idx];
-            *kibic = Kibic(i, druzyna, -1, 0, 0, 0, jest_dzieckiem, id_opiekuna);
-            sem_post(hala_sem);
-
-            proces_kibica_z_kontrola(idx, kibic, hala, kasy_sem, hala_sem);
-            exit(0);
+            char idx_str[16], shm_id_str[16];
+            snprintf(idx_str, sizeof(idx_str), "%d", i);
+            snprintf(shm_id_str, sizeof(shm_id_str), "%d", hala->g_shm_id);
+            execl("./kibic", "kibic", idx_str, shm_id_str, (char*)NULL);
+            perror("execl kibic");
+            exit(1);
         }
-        wygenerowano_kibiców++;
-        usleep(10000 + rand() % 10000); // 30-80ms między kibicami
+        usleep(10000 + rand() % 10000);
     }
+
 
     printf("[MAIN] Generuję VIP-ów (%d)...\n", POJEMNOSC_VIP);
     for (int i = 0; i < POJEMNOSC_VIP && !zakoncz; i++) {
@@ -248,17 +283,12 @@ int main(int argc, char *argv[]) {
         }
         if (pid == 0) {
             jest_procesem_potomnym = 1;
-            srand(time(NULL) ^ getpid());
-
-            sem_wait(hala_sem);
-            int idx = hala->liczba_kibiców_VIP;
-            hala->liczba_kibiców_VIP++;
-            Kibic *kibic_vip = &hala->kibice_vip[idx];
-            *kibic_vip = Kibic(1000 + i, 1);
-            sem_post(hala_sem);
-
-            proces_kibica_vip(idx, kibic_vip, hala, kasy_sem, hala_sem);
-            exit(0);
+            char idx_str[16], shm_id_str[16];
+            snprintf(idx_str, sizeof(idx_str), "%d", i+1000); // VIP id
+            snprintf(shm_id_str, sizeof(shm_id_str), "%d", hala->g_shm_id);
+            execl("./kibic_vip", "kibic_vip", idx_str, shm_id_str, NULL);
+            perror("execl VIP");
+            exit(1);
         }
         usleep(100000 + rand() % 200000);
     }
@@ -279,13 +309,13 @@ int main(int argc, char *argv[]) {
     // Monitorowanie
     int timeout = 180; // Zwiększ timeout
     while (!zakoncz && timeout > 0) {
-        wyswietl_status(hala, hala_sem);
+        wyswietl_status(hala);
 
-        sem_wait(hala_sem);
+        sem_wait(&hala->main_sem);
         int na_hali = hala->kibice_na_hali;
         int sprzedane = hala->sprzedane_bilety;
         int vip_count = hala->liczba_kibiców_VIP;
-        sem_post(hala_sem);
+        sem_post(&hala->main_sem);
 
         // Sprawdź czy wszyscy z biletami są na hali
         if (na_hali >= sprzedane && sprzedane >= K_KIBICOW) {
@@ -302,7 +332,7 @@ int main(int argc, char *argv[]) {
     printf("=== PODSUMOWANIE SYMULACJI ===\n");
     printf("========================================\n");
 
-    sem_wait(hala_sem);
+    sem_wait(&hala->main_sem);
     printf("Kibice na hali: %d\n", hala->kibice_na_hali);
     printf("Sprzedane bilety: %d/%d\n", hala->sprzedane_bilety, K_KIBICOW);
     printf("VIP-ów: %d\n", hala->liczba_kibiców_VIP);
@@ -311,7 +341,7 @@ int main(int argc, char *argv[]) {
         printf("  Sektor %d: %d/%d\n", i, hala->sprzedane_bilety_w_sektorze[i], POJEMNOSC_SEKTORA);
     }
     printf("  Sektor VIP: %d\n", hala->sprzedane_bilety_w_sektorze[SEKTOR_VIP]);
-    sem_post(hala_sem);
+    sem_post(&hala->main_sem);
 
     printf("\n[MAIN] Kończę procesy potomne...\n");
     kill(0, SIGTERM);

@@ -134,10 +134,14 @@ typedef struct {
     int mecz_rozpoczety;
     int mecz_zakonczony;
     int ewakuacja;
+
+    // semafory
+    sem_t main_sem;
+    int g_shm_id;
 } Hala;
 
-void proces_kasy(int id, Hala *hala, sem_t *kasa_sem);
-void generator_kas(Hala *hala, sem_t *sem);
-void proces_stanowiska(int sektor_id, int stanowisko_id, Hala *hala, sem_t *sektor_sem);
-void proces_kibica_vip(int idx, Kibic *kibic, Hala *hala, sem_t *sem_kasa, sem_t *sem_hala);
-void proces_kibica_z_kontrola(int moj_idx, Kibic *kibic, Hala *hala, sem_t *sem_kasa, sem_t *sem_hala);
+void proces_kasy(int id, Hala *hala);
+void generator_kas(Hala *hala);
+void proces_stanowiska(int sektor_id, int stanowisko_id, Hala *hala);
+void proces_kibica_vip(int idx, Kibic *kibic, Hala *hala);
+void proces_kibica_z_kontrola(int moj_idx, Kibic *kibic, Hala *hala);

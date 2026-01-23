@@ -29,7 +29,7 @@ void obsluga_ewakuacja(int sig, siginfo_t *info, void *context) {
     printf("[Pracownik %d] Otrzymano sygnał EWAKUACJA\n", g_sektor_id);
 }
 
-void proces_stanowiska(int sektor_id, int stanowisko_id, Hala *hala, sem_t *sektor_sem) {
+void proces_stanowiska(int sektor_id, int stanowisko_id, Hala *hala) {
     string logger_filename = std::format("log_sektor_{}.log", sektor_id);;
     Logger sektor_logger(logger_filename); // Create logger instance
 
@@ -58,7 +58,7 @@ void proces_stanowiska(int sektor_id, int stanowisko_id, Hala *hala, sem_t *sekt
     Stanowisko *stan = &wejscie->stanowiska[stanowisko_id];
     // sem_init(&wejscie->sektor_sem, 1, 0);
     while (1) {
-        sem_wait(sektor_sem);
+        sem_wait(&hala->main_sem);
 
         // Sprawdź ewakuację
         if (ewakuacja || hala->ewakuacja) {
@@ -68,7 +68,7 @@ void proces_stanowiska(int sektor_id, int stanowisko_id, Hala *hala, sem_t *sekt
 
         // Sprawdź koniec symulacji
         if (hala->kibice_na_hali >= K_KIBICOW || hala->mecz_zakonczony) {
-            sem_post(sektor_sem);
+            sem_post(&hala->main_sem);
             printf("[Stanowisko %d-%d] Koniec pracy\n", sektor_id, stanowisko_id);
             exit(0);
         }
@@ -76,7 +76,7 @@ void proces_stanowiska(int sektor_id, int stanowisko_id, Hala *hala, sem_t *sekt
 
         // Sprawdź czy wstrzymane przez kierownika
         if (wejscie->wstrzymane || wstrzymane) {
-            sem_post(sektor_sem);
+            sem_post(&hala->main_sem);
             usleep(200000);
             continue;
         }
@@ -116,6 +116,23 @@ void proces_stanowiska(int sektor_id, int stanowisko_id, Hala *hala, sem_t *sekt
             }
         }
 
-        sem_post(sektor_sem);
+        sem_post(&hala->main_sem);
     }
+}
+
+int main(int argc, char *argv[]) {
+    if (argc < 4) {
+        fprintf(stderr, "Usage: %s <sektor_id> <stanowisko_id> <shm_id>\n", argv[0]);
+        return 1;
+    }
+    int sektor_id = atoi(argv[1]);
+    int stanowisko_id = atoi(argv[2]);
+    int shm_id = atoi(argv[3]);
+    Hala* hala = (Hala*)shmat(shm_id, NULL, 0);
+    if (hala == (void*)-1) {
+        perror("shmat");
+        return 1;
+    }
+    proces_stanowiska(sektor_id, stanowisko_id, hala);
+    return 0;
 }
