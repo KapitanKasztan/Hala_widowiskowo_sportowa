@@ -62,17 +62,28 @@ void proces_kibica_z_kontrola(int moj_idx, Kibic *kibic, Hala *hala) {
 }
 
 int main(int argc, char *argv[]) {
+    printf("[KIBIC %d] Start, argc=%d\n", getpid(), argc);
+    fflush(stdout);
+
     if (argc < 3) {
         fprintf(stderr, "Usage: %s <idx> <shm_id>\n", argv[0]);
         return 1;
     }
     int idx = atoi(argv[1]);
     int shm_id = atoi(argv[2]);
+
+    printf("[KIBIC %d] idx=%d, shm_id=%d\n", getpid(), idx, shm_id);
+    fflush(stdout);
+
     Hala* hala = (Hala*)shmat(shm_id, NULL, 0);
     if (hala == (void*)-1) {
         perror("shmat");
         return 1;
     }
+
+    printf("[KIBIC %d] Podłączono do pamięci\n", getpid());
+    fflush(stdout);
+
     Kibic *kibic = &hala->kibice[idx];
     proces_kibica_z_kontrola(idx, kibic, hala);
     return 0;

@@ -173,6 +173,15 @@ int main(int argc, char *argv[]) {
 
     // Inicjalizacja struktury
     memset(hala, 0, sizeof(Hala));
+    printf("[MAIN] Inicjalizacja kibiców...\n");
+    for (int i = 0; i < K_KIBICOW + K_KIBICOW; i++) {
+        hala->kibice[i] = Kibic(i, i % 2, -1, 0, 0, 0, 0, -1);
+        hala->kibice[i].id = i;
+    }
+    for (int i = 0; i < POJEMNOSC_VIP + 1; i++) {
+        hala->kibice_vip[i] = Kibic(i, 1);
+        hala->kibice_vip[i].id = i;
+    }
     hala->sprzedane_bilety = 0;
     hala->otwarte_kasy = 0;
     hala->rozmiar_kolejki_kasy_vip = 0;
@@ -185,7 +194,7 @@ int main(int argc, char *argv[]) {
     hala->liczba_kibiców_VIP = 0;
     hala->rozmiar_kolejki_kasy = 0;
     hala->rozmiar_dzieci = 0;
-    sem_init(&hala->main_sem, 1, 0);
+    sem_init(&hala->main_sem, 1, 1);
     hala->g_shm_id = g_shm_id;
 
     // Inicjalizacja sektorów
@@ -255,6 +264,7 @@ int main(int argc, char *argv[]) {
     sleep(1); // Daj czas na uruchomienie kas i stanowisk
 
     printf("[MAIN] Generuję kibiców...\n");
+
     int wygenerowano_kibiców = 0;
     for (int i = 1; i <= K_KIBICOW && !zakoncz; i++) {
         pid_t pid = fork();
@@ -284,7 +294,7 @@ int main(int argc, char *argv[]) {
         if (pid == 0) {
             jest_procesem_potomnym = 1;
             char idx_str[16], shm_id_str[16];
-            snprintf(idx_str, sizeof(idx_str), "%d", i+1000); // VIP id
+            snprintf(idx_str, sizeof(idx_str), "%d", i); // VIP id
             snprintf(shm_id_str, sizeof(shm_id_str), "%d", hala->g_shm_id);
             execl("./kibic_vip", "kibic_vip", idx_str, shm_id_str, NULL);
             perror("execl VIP");
