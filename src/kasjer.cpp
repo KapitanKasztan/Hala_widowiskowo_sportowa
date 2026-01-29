@@ -1,161 +1,240 @@
-#include <algorithm>
-#include <format>
-
+// kasjer.cpp - Wersja z "downgrade" biletów (2->1) przy braku miejsc
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/shm.h>
+#include <sys/sem.h>
+#include <sys/msg.h>
+#include <time.h>
+#include <string.h>
 #include "../include/common.h"
-#include "../include/logger.h"
 
+typedef struct {
+    FILE *file;
+    int id;
+} Logger;
 
-bool sprawdz_czy_zamknac_kase_bilety(int id, Hala *hala, Logger &kasjer_logger) {
-    if (hala->sprzedane_bilety >= K_KIBICOW) {
-        kasjer_logger.log(INFO, std::format("[Kasa {}] Wszystkie bilety sprzedane - zamykam", id));
-        hala->otwarte_kasy--;
-        return true;
-    }
-    return false;
+void log_msg(Logger *logger, const char *level, const char *msg) {
+    time_t now = time(NULL);
+    char timestr[64];
+    strftime(timestr, sizeof(timestr), "%Y-%m-%d %H:%M:%S", localtime(&now));
+    fprintf(logger->file, "[%s] [Kasa %d] [%s] %s\n", timestr, logger->id, level, msg);
+    fflush(logger->file);
+    printf("[Kasa %d] %s\n", logger->id, msg);
 }
 
-bool obsluz_vip(int id, Hala *hala, Logger &kasjer_logger) {
-    if (hala->rozmiar_kolejki_kasy_vip <= 0) {
-        return false;
+bool obsluz_vip(int id, Hala *hala, Logger *logger) {
+    if (hala->rozmiar_kolejki_kasy_vip <= 0) return false;
+
+    int id_vip = hala->kolejka_do_kasy_VIP[0];
+    Kibic* vip = &hala->kibice_vip[id_vip];
+
+    for (int j = 0; j < hala->rozmiar_kolejki_kasy_vip - 1; j++) {
+        hala->kolejka_do_kasy_VIP[j] = hala->kolejka_do_kasy_VIP[j + 1];
     }
-    int id_obslugiwanego_kibica = hala->kolejka_do_kasy_VIP[0];
-    Kibic* obslugiwany_kibic = &hala->kibice_vip[id_obslugiwanego_kibica];
     hala->rozmiar_kolejki_kasy_vip--;
 
-    int liczba_biletow = 1;
+    long target_mtype = id_vip + VIP_MTYPE_OFFSET;
 
-    while ((hala->sprzedane_bilety_w_sektorze[SEKTOR_VIP] + liczba_biletow > POJEMNOSC_VIP)) {
-        liczba_biletow--;
-    }
-    if (liczba_biletow == 0) {
-        kasjer_logger.log(WARNING, std::format("[Kasa {}] VIP {} - brak miejsc w sektorze VIP", id, obslugiwany_kibic->id));
+    if (hala->sprzedane_bilety_w_sektorze[SEKTOR_VIP] >= POJEMNOSC_VIP) {
+        log_msg(logger, "WARNING", "Brak miejsc w VIP");
+        struct moj_komunikat kom;
+        kom.mtype = target_mtype;
+        kom.kibic_id = id_vip;
+        kom.akcja = 0;
+        msgsnd(hala->msg_id, &kom, sizeof(kom) - sizeof(long), 0);
         return true;
     }
-    hala->sprzedane_bilety_w_sektorze[SEKTOR_VIP] += liczba_biletow;
-    kasjer_logger.log(INFO, std::format("[Kasa {}] VIP - sprzedano {} bilet(ów) do sektora VIP", id, liczba_biletow));
-    obslugiwany_kibic->ma_bilet = 1;
-    obslugiwany_kibic->liczba_biletow = liczba_biletow;
-    sem_post(&obslugiwany_kibic->bilet_sem);
+
+    hala->sprzedane_bilety_w_sektorze[SEKTOR_VIP]++;
+    hala->sprzedane_bilety++;
+    vip->ma_bilet = 1;
+    vip->sektor = SEKTOR_VIP;
+    vip->liczba_biletow = 1;
+
+    char msg[128]; snprintf(msg, sizeof(msg), "VIP %d kupił bilet", id_vip);
+    log_msg(logger, "INFO", msg);
+
+    struct moj_komunikat kom;
+    kom.mtype = target_mtype;
+    kom.kibic_id = id_vip;
+    kom.akcja = 1;
+    kom.sektor = SEKTOR_VIP;
+    strcpy(kom.text, "Bilet VIP");
+    msgsnd(hala->msg_id, &kom, sizeof(kom) - sizeof(long), 0);
     return true;
 }
 
-bool sprawdz_czy_zamknac_kase_kolejka(int id, Hala *hala, Logger &kasjer_logger) {
-    if (hala->rozmiar_kolejki_kasy < (K_KIBICOW / LICZBA_KAS) * (hala->otwarte_kasy - 1)
-        && hala->otwarte_kasy > 2
-        && id == hala->otwarte_kasy) {
-        hala->otwarte_kasy--;
-        kasjer_logger.log(INFO, std::format("[Kasa {}] Zamykam (za mało kibiców, otwarte: {})", id, hala->otwarte_kasy));
-        return true;
-    }
-    return false;
-}
-
-void przesun_kolejke(Hala *hala) {
-    for (int j = 0; j < hala->rozmiar_kolejki_kasy - 1; j++) {
-        hala->kolejka_do_kasy[j] = hala->kolejka_do_kasy[j + 1];
-    }
-    hala->rozmiar_kolejki_kasy--;
-}
-
-int znajdz_wolny_sektor(Hala *hala, int &liczba_biletow, int id_kibica, Logger &kasjer_logger) {
-    int sektor = rand() % 8;
+int znajdz_wolny_sektor(Hala *hala, int liczba_biletow) {
+    int sektor = rand() % LICZBA_SEKTOROW;
     int proby = 0;
-    while (hala->sprzedane_bilety_w_sektorze[sektor] + liczba_biletow > K_KIBICOW / 8) {
-        if (liczba_biletow == 0) {
-            return -1;
-        }
-        if (proby == 8) {
-            liczba_biletow--;
-            kasjer_logger.log(WARNING, std::format("[Kasa] Zmniejszam liczbę biletów dla [Kibica {}] do {} z powodu braku miejsc", id_kibica, liczba_biletow));
-            proby = 0;
-        }
-        sektor = (sektor + 1) % 8;
+    while (hala->sprzedane_bilety_w_sektorze[sektor] + liczba_biletow > POJEMNOSC_SEKTORA) {
         proby++;
+        if (proby >= LICZBA_SEKTOROW) return -1;
+        sektor = (sektor + 1) % LICZBA_SEKTOROW;
     }
     return sektor;
 }
 
-void proces_kasy(int id, Hala *hala, Logger &kasjer_logger) {
-    kasjer_logger.log(INFO, std::format("[Kasa {}] Otwarcie", id));
+int utworz_towarzysza(Hala *hala, int id_glownego, int sektor) {
+    int id_towarzysza = hala->liczba_kibicow;
+    if (id_towarzysza >= K_KIBICOW + K_KIBICOW) return -1;
+
+    Kibic *towarzysz = &hala->kibice[id_towarzysza];
+    Kibic *glowny = &hala->kibice[id_glownego];
+
+    towarzysz->id = id_towarzysza;
+    towarzysz->druzyna = glowny->druzyna;
+    towarzysz->sektor = sektor;
+    towarzysz->jest_vip = 0;
+    towarzysz->jest_dzieckiem = 0;
+    towarzysz->ma_bilet = 1;
+    towarzysz->na_hali = 0;
+    towarzysz->liczba_biletow = 0;
+    towarzysz->pid = 0;
+
+    towarzysz->id_towarzysza = id_glownego;
+    glowny->id_towarzysza = id_towarzysza;
+
+    if (glowny->jest_dzieckiem) {
+        glowny->id_opiekuna_ref = id_towarzysza;
+        towarzysz->id_opiekuna_ref = id_glownego;
+    }
+
+    hala->liczba_kibicow++;
+    return id_towarzysza;
+}
+
+void proces_kasy(int id, int shm_id, int sem_id, int msg_id) {
+    Hala* hala = (Hala*)shmat(shm_id, NULL, 0);
+    if (hala == (void*)-1) exit(1);
+
+    char log_filename[64];
+    snprintf(log_filename, sizeof(log_filename), "kasjer_%d.log", id);
+    Logger logger = {fopen(log_filename, "w"), id};
+    log_msg(&logger, "INFO", "Kasa otwarta");
 
     while (1) {
-        sem_wait(&hala->main_sem);
+        sem_wait_ipc(sem_id, SEM_MAIN);
 
-        if (sprawdz_czy_zamknac_kase_bilety(id, hala, kasjer_logger)) {
-            sem_post(&hala->main_sem);
+        if (hala->sprzedane_bilety >= LIMIT_SPRZEDAZY) {
+            if (hala->rozmiar_kolejki_kasy > 0) {
+                int id_kibica = hala->kolejka_do_kasy[0];
+                for (int j = 0; j < hala->rozmiar_kolejki_kasy - 1; j++)
+                    hala->kolejka_do_kasy[j] = hala->kolejka_do_kasy[j + 1];
+                hala->rozmiar_kolejki_kasy--;
+
+                struct moj_komunikat kom;
+                kom.mtype = id_kibica + 1;
+                kom.akcja = 0;
+                msgsnd(msg_id, &kom, sizeof(kom) - sizeof(long), IPC_NOWAIT);
+                sem_post_ipc(sem_id, SEM_MAIN);
+                continue;
+            }
+            log_msg(&logger, "INFO", "Bilety wyprzedane - koniec");
+            hala->otwarte_kasy--;
+            sem_post_ipc(sem_id, SEM_MAIN);
+            fclose(logger.file);
+            shmdt(hala);
             exit(0);
         }
 
-        if (obsluz_vip(id, hala, kasjer_logger)) {
-            sem_post(&hala->main_sem);
-            usleep(500000);
+        if (obsluz_vip(id, hala, &logger)) {
+            sem_post_ipc(sem_id, SEM_MAIN);
+            usleep(300000);
             continue;
         }
 
-        if (sprawdz_czy_zamknac_kase_kolejka(id, hala, kasjer_logger)) {
-            sem_post(&hala->main_sem);
+        if (hala->otwarte_kasy > 2 &&
+            hala->rozmiar_kolejki_kasy < (K_KIBICOW / LICZBA_KAS) * (hala->otwarte_kasy - 1) &&
+            id == hala->otwarte_kasy) {
+            hala->otwarte_kasy--;
+            log_msg(&logger, "INFO", "Zamykam kasę (mały ruch)");
+            sem_post_ipc(sem_id, SEM_MAIN);
+            fclose(logger.file);
+            shmdt(hala);
             exit(0);
         }
 
         if (hala->rozmiar_kolejki_kasy > 0) {
-            int id_obslugiwanego_kibica = hala->kolejka_do_kasy[0];
-            Kibic* obslugiwany_kibic = &hala->kibice[id_obslugiwanego_kibica];
+            int id_kibica = hala->kolejka_do_kasy[0];
+            Kibic* kibic = &hala->kibice[id_kibica];
 
-            przesun_kolejke(hala);
+            for (int j = 0; j < hala->rozmiar_kolejki_kasy - 1; j++)
+                hala->kolejka_do_kasy[j] = hala->kolejka_do_kasy[j + 1];
+            hala->rozmiar_kolejki_kasy--;
 
             int liczba_biletow = 1;
+            if (kibic->jest_dzieckiem) liczba_biletow = 2;
+            else liczba_biletow = 1 + (rand() % 2);
 
-            int sektor = znajdz_wolny_sektor(hala, liczba_biletow, obslugiwany_kibic->id, kasjer_logger);
+            int sektor = znajdz_wolny_sektor(hala, liczba_biletow);
+
+            // ================================================================
+            // FIX: Jeśli brak miejsc na 2 bilety, spróbuj sprzedać 1 (jeśli dorosły)
+            // ================================================================
+            if (sektor == -1 && liczba_biletow == 2 && !kibic->jest_dzieckiem) {
+                char warn[128];
+                snprintf(warn, sizeof(warn), "Kibic %d chciał 2 bilety, ale brak par miejsc. Próba sprzedaży 1.", id_kibica);
+                log_msg(&logger, "WARNING", warn);
+
+                liczba_biletow = 1;
+                sektor = znajdz_wolny_sektor(hala, liczba_biletow);
+            }
+
+            long target_mtype = id_kibica + 1;
+
             if (sektor == -1) {
-                kasjer_logger.log(WARNING, std::format("[Kasa {}] Brak miejsc w żadnym sektorze dla kibica {}", id, obslugiwany_kibic->id));
-                obslugiwany_kibic->ma_bilet = 0;
-                przesun_kolejke(hala);
-                sem_post(&hala->main_sem);
-                continue;
+                log_msg(&logger, "WARNING", "Brak miejsc dla kibica w jednym sektorze");
+                struct moj_komunikat kom;
+                kom.mtype = target_mtype;
+                kom.akcja = 0;
+                msgsnd(msg_id, &kom, sizeof(kom) - sizeof(long), 0);
+            } else {
+                hala->sprzedane_bilety_w_sektorze[sektor] += liczba_biletow;
+                hala->sprzedane_bilety += liczba_biletow;
+                kibic->ma_bilet = 1;
+                kibic->sektor = sektor;
+                kibic->liczba_biletow = liczba_biletow;
+
+                if (liczba_biletow == 2) {
+                    int id_drugiego = utworz_towarzysza(hala, id_kibica, sektor);
+                    char msg[128];
+                    if (kibic->jest_dzieckiem)
+                        snprintf(msg, sizeof(msg), "Dziecko %d kupiło 2 bilety -> Opiekun %d", id_kibica, id_drugiego);
+                    else
+                        snprintf(msg, sizeof(msg), "Kibic %d kupił 2 bilety -> Towarzysz %d", id_kibica, id_drugiego);
+                    log_msg(&logger, "INFO", msg);
+                }
+                else {
+                    char msg[128];
+                    snprintf(msg, sizeof(msg), "Kibic %d kupił 1 bilet", id_kibica);
+                    log_msg(&logger, "INFO", msg);
+                }
+
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Sprzedano: %d bilet(ów) do sektora %d (Suma: %d/%d)",
+                        liczba_biletow, sektor, hala->sprzedane_bilety, LIMIT_SPRZEDAZY);
+                log_msg(&logger, "INFO", msg);
+
+                struct moj_komunikat kom;
+                kom.mtype = target_mtype;
+                kom.kibic_id = id_kibica;
+                kom.akcja = 1;
+                kom.sektor = sektor;
+                msgsnd(msg_id, &kom, sizeof(kom) - sizeof(long), 0);
             }
-
-            hala->sprzedane_bilety_w_sektorze[sektor] += liczba_biletow;
-            hala->sprzedane_bilety += liczba_biletow;
-            obslugiwany_kibic->ma_bilet = 1;
-            obslugiwany_kibic->liczba_biletow = liczba_biletow;
-            sem_post(&obslugiwany_kibic->bilet_sem);
-            obslugiwany_kibic->sektor = sektor;
-
-            kasjer_logger.log(INFO, std::format("[Kasa {}] Kibic {} - {} bilet(ów), sektor {} (sprzedano: {}/{})",
-                   id, obslugiwany_kibic->id, liczba_biletow, sektor,
-                   hala->sprzedane_bilety, K_KIBICOW));
-
-            if (obslugiwany_kibic->jest_dzieckiem && liczba_biletow == 1) {
-                hala->dzieci_bez_opiekuna[hala->rozmiar_dzieci++] = id_obslugiwanego_kibica;
-            }
-
-            sem_post(&hala->main_sem);
+            sem_post_ipc(sem_id, SEM_MAIN);
             usleep(300000);
         } else {
-            sem_post(&hala->main_sem);
+            sem_post_ipc(sem_id, SEM_MAIN);
             usleep(100000);
         }
     }
 }
 
 int main(int argc, char *argv[]) {
-    int id_kasy = atoi(argv[1]);
-    int shm_id = atoi(argv[2]);
-    Logger kasjer_logger = Logger(std::format("kasjer_{}.log", id_kasy));
-    if (argc < 3) {
-        kasjer_logger.log(ERROR, std::format("Użycie: {} <id_kasy> <shm_id> <sem_name> {}", argv[0], argc));
-        return 1;
-    }
-
-
-
-    Hala* hala = (Hala*)shmat(shm_id, NULL, 0);
-    if (hala == (void*)-1) {
-        kasjer_logger.log(CRITICAL, "shmat error");
-        return 1;
-    }
-    kasjer_logger.log(INFO, std::format("[Kasa {}] Podłączono do pamięci współdzielonej", id_kasy));
-    proces_kasy(id_kasy, hala, kasjer_logger);
-
+    if (argc < 5) return 1;
+    proces_kasy(atoi(argv[1]), atoi(argv[2]), atoi(argv[3]), atoi(argv[4]));
     return 0;
 }

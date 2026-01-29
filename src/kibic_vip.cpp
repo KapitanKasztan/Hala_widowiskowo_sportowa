@@ -1,62 +1,74 @@
-#include <filesystem>
-#include <format>
+// kibic_vip.cpp - Wersja zsynchronizowana
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/shm.h>
+#include <sys/sem.h>
+#include <sys/msg.h>
 #include "../include/common.h"
-#include "../include/logger.h"
 
-void proces_kibica_vip(int id, Kibic *kibic ,Hala *hala) {
-    std::string logs_dir = "tmp_VIP_kibic_logs";
-    std::error_code ec;
-    std::filesystem::create_directories(logs_dir, ec);
-    if (ec) {
-        fprintf(stderr, "Failed to create logs directory `%s`: %s\n", logs_dir.c_str(), ec.message().c_str());
+void proces_kibica_vip(int idx, int shm_id, int sem_id, int msg_id) {
+    Hala* hala = (Hala*)shmat(shm_id, NULL, 0);
+    if (hala == (void*)-1) exit(1);
+
+    Kibic *kibic_vip = &hala->kibice_vip[idx];
+    kibic_vip->pid = getpid();
+
+    // Wchodzi do kolejki VIP
+    sem_wait_ipc(sem_id, SEM_MAIN);
+    hala->kolejka_do_kasy_VIP[hala->rozmiar_kolejki_kasy_vip++] = idx;
+    int pozycja = hala->rozmiar_kolejki_kasy_vip;
+    sem_post_ipc(sem_id, SEM_MAIN);
+
+    printf("[VIP %d] Czekam na bilet (Kolejka VIP poz: %d)\n", idx, pozycja);
+
+    // ODBIÓR NA KANALE OFFSETOWANYM
+    // Musi być zgodny z tym, co wysyła Kasjer
+    long my_mtype = idx + VIP_MTYPE_OFFSET;
+
+    struct moj_komunikat kom;
+    if (msgrcv(msg_id, &kom, sizeof(kom) - sizeof(long), my_mtype, 0) == -1) {
+        perror("msgrcv VIP");
+        shmdt(hala);
+        exit(1);
     }
-    std::string logger_filename = std::format("{}/kibic_{}.log", logs_dir, kibic->id);
-    Logger VIP_logger(logger_filename); // Create logger instance
-    sem_wait(&hala->main_sem);
-    hala->kolejka_do_kasy[hala->rozmiar_kolejki_kasy++] = id;
-    int pozycja_kasa = hala->rozmiar_kolejki_kasy;
-    sem_post(&hala->main_sem);
 
-    sem_wait(&hala->main_sem);
-    hala->kolejka_do_kasy_VIP[hala->rozmiar_kolejki_kasy_vip++] = id;
-
-    VIP_logger.log(INFO, std::format("[VIP {}] Żądam obsługi (VIP: {})", id, hala->rozmiar_kolejki_kasy_vip));
-    sem_post(&hala->main_sem);
-
-    if (hala->sprzedane_bilety >= K_KIBICOW) {
-        VIP_logger.log(WARNING, "[VIP] Brak biletów. Odchodzę!");
+    if (kom.akcja == 0) {
+        printf("[VIP %d] Brak biletów VIP. Odchodzę!\n", idx);
+        shmdt(hala);
         exit(0);
     }
-    sem_wait(&kibic->bilet_sem);
-    VIP_logger.log(INFO, std::format("[VIP {}] Wchodzę osobnym wejściem do sektora VIP (bez kontroli)", id));
 
-    sem_wait(&hala->main_sem);
+    printf("[VIP %d] Otrzymałem bilet! Wchodzę na halę.\n", idx);
 
+    // Wchodzi na halę (zwiększa licznik, na który czeka Main)
+    sem_wait_ipc(sem_id, SEM_MAIN);
     hala->kibice_na_hali++;
-    hala->kibice_w_sektorze[SEKTOR_VIP][hala->kibice_w_sektorze_ilosc[SEKTOR_VIP]++] = kibic->id;
-    VIP_logger.log(INFO, std::format("[VIP] kibice na hali: {} w sektorze: {}", hala->kibice_na_hali, hala->kibice_w_sektorze_ilosc[SEKTOR_VIP]));
+    hala->kibice_w_sektorze[SEKTOR_VIP][hala->kibice_w_sektorze_ilosc[SEKTOR_VIP]++] = idx;
+    hala->liczba_kibicow_VIP++;
+    kibic_vip->na_hali = 1;
+    sem_post_ipc(sem_id, SEM_MAIN);
 
-    sem_post(&hala->main_sem);
+    printf("[VIP %d] Jestem w sektorze VIP!\n", idx);
 
-    VIP_logger.log(INFO, std::format("[VIP {}] Jestem na hali!", id));
+    // Oglądanie meczu
+    while (!hala->mecz_zakonczony && !hala->ewakuacja) {
+        usleep(500000);
+    }
+
+    if (hala->ewakuacja) printf("[VIP %d] Ewakuacja!\n", idx);
+    else printf("[VIP %d] Koniec meczu.\n", idx);
+
+    sem_wait_ipc(sem_id, SEM_MAIN);
+    hala->kibice_na_hali--;
+    sem_post_ipc(sem_id, SEM_MAIN);
+
+    shmdt(hala);
+    exit(0);
 }
 
 int main(int argc, char *argv[]) {
-    string logger_filename = "VIP_logger.log";
-    Logger VIP_logger(logger_filename);
-
-    if (argc < 3) {
-        VIP_logger.log(ERROR, std::format("Użycie: {} <idx> <shm_id>", argv[0]));
-        return 1;
-    }
-    int idx = atoi(argv[1]);
-    int shm_id = atoi(argv[2]);
-    Hala* hala = (Hala*)shmat(shm_id, NULL, 0);
-    if (hala == (void*)-1) {
-        VIP_logger.log(CRITICAL, "shmat error");
-        return 1;
-    }
-    Kibic *kibic_vip = &hala->kibice_vip[idx];
-    proces_kibica_vip(idx, kibic_vip, hala);
+    if (argc < 5) return 1;
+    proces_kibica_vip(atoi(argv[1]), atoi(argv[2]), atoi(argv[3]), atoi(argv[4]));
     return 0;
 }

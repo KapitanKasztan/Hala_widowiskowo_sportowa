@@ -1,90 +1,191 @@
-#include <filesystem>
-#include <format>
-
+// kibic.cpp - Wersja na WĄTKACH (rozwiązuje problem synchronizacji towarzyszy)
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/shm.h>
+#include <sys/sem.h>
+#include <sys/msg.h>
+#include <time.h>
+#include <pthread.h>
 #include "../include/common.h"
 
+// Struktura przekazywana do wątku towarzysza/opiekuna
+struct ThreadArg {
+    Hala* hala;
+    int id_kibica; // ID towarzysza/opiekuna
+    int id_glownego; // ID tego, kto kupił bilet
+    int sektor;
+    int msg_id;
+    int sem_id;
+    int role; // 0 = towarzysz, 1 = opiekun
+};
 
-void proces_kibica_z_kontrola(int moj_idx, Kibic *kibic, Hala *hala) {
-    std::string logs_dir = "tmp_kibic_logs";
-    std::error_code ec;
-    std::filesystem::create_directories(logs_dir, ec);
-    if (ec) {
-        fprintf(stderr, "Failed to create logs directory `%s`: %s\n", logs_dir.c_str(), ec.message().c_str());
+// Funkcja wątku towarzysza/opiekuna
+void* watek_towarzysza(void* arg) {
+    struct ThreadArg* data = (struct ThreadArg*)arg;
+    Hala* hala = data->hala;
+    int my_id = data->id_kibica;
+
+    Kibic *ja = &hala->kibice[my_id];
+    ja->pid = getpid(); // Wątek ma ten sam PID co proces główny
+
+    if (data->role == 1) {
+        printf("[Opiekun %d] (Wątek) Opiekuję się dzieckiem %d, idę do sektora %d\n",
+               my_id, data->id_glownego, data->sektor);
+    } else {
+        printf("[Towarzysz %d] (Wątek) Idę z kibicem %d do sektora %d\n",
+               my_id, data->id_glownego, data->sektor);
     }
-    std::string logger_filename = std::format("{}/kibic_{}.log", logs_dir, kibic->id);
-    Logger kibic_logger(logger_filename); // Create logger instance
-    sem_wait(&hala->main_sem);
-    hala->kolejka_do_kasy[hala->rozmiar_kolejki_kasy++] = moj_idx;
+
+    // Ustawienie się w kolejce do wejścia
+    sem_wait_ipc(data->sem_id, SEM_WEJSCIA + data->sektor);
+    WejscieDoSektora *wejscie = &hala->wejscia[data->sektor];
+    wejscie->kolejka_do_kontroli[wejscie->rozmiar_kolejki++] = my_id;
+    sem_post_ipc(data->sem_id, SEM_WEJSCIA + data->sektor);
+
+    // Oczekiwanie na wpuszczenie (na unikalnym kanale ID+1, nie PID)
+    struct moj_komunikat kom;
+    if (msgrcv(data->msg_id, &kom, sizeof(kom) - sizeof(long), my_id + 1, 0) == -1) {
+        perror("msgrcv watek");
+        pthread_exit(NULL);
+    }
+
+    if (kom.akcja == MSG_KONTROLA) {
+        ja->na_hali = 1;
+        if (data->role == 1)
+            printf("[Opiekun %d] Jestem na hali w sektorze %d!\n", my_id, data->sektor);
+        else
+            printf("[Towarzysz %d] Jestem na hali w sektorze %d!\n", my_id, data->sektor);
+    }
+
+    // Symulacja oglądania meczu
+    while (!hala->mecz_zakonczony && !hala->ewakuacja) {
+        usleep(500000);
+    }
+
+    // Wyjście
+    sem_wait_ipc(data->sem_id, SEM_MAIN);
+    hala->kibice_na_hali--;
+    sem_post_ipc(data->sem_id, SEM_MAIN);
+
+    pthread_exit(NULL);
+}
+
+void proces_kibica(int idx, int shm_id, int sem_id, int msg_id) {
+    Hala* hala = (Hala*)shmat(shm_id, NULL, 0);
+    if (hala == (void*)-1) exit(1);
+
+    Kibic *kibic = &hala->kibice[idx];
+    kibic->pid = getpid();
+
+    // 1. Kolejka do kasy
+    sem_wait_ipc(sem_id, SEM_MAIN);
+    hala->kolejka_do_kasy[hala->rozmiar_kolejki_kasy++] = idx;
     int pozycja_kasa = hala->rozmiar_kolejki_kasy;
-    sem_post(&hala->main_sem);
-    kibic_logger.log(INFO, std::format("[Kibic {}] Czekam w kolejce do kasy (pozycja: {}){}\n", kibic->id, pozycja_kasa, kibic->jest_dzieckiem ? " [DZIECKO]" : ""));
-    // Czekaj na biletjak
-    if (hala->sprzedane_bilety >= K_KIBICOW) {
-        kibic_logger.log(INFO,"Brak biletów. Odchodze!\n");
+    sem_post_ipc(sem_id, SEM_MAIN);
+
+    printf("[Kibic %d] Czekam w kolejce do kasy (pozycja: %d)%s\n",
+           kibic->id, pozycja_kasa, kibic->jest_dzieckiem ? " [DZIECKO]" : "");
+
+    // 2. Odbiór biletu (kanał = idx + 1)
+    struct moj_komunikat kom;
+    if (msgrcv(msg_id, &kom, sizeof(kom) - sizeof(long), idx + 1, 0) == -1) {
+        perror("msgrcv kibic");
+        shmdt(hala);
+        exit(1);
+    }
+
+    if (kom.akcja == 0) {
+        printf("[Kibic %d] Brak biletów. Odchodzę!\n", kibic->id);
+        shmdt(hala);
         exit(0);
     }
-    sem_wait(&kibic->bilet_sem);
 
-    // Jeśli dziecko z 1 biletem - musi poczekać na opiekuna
-    // if (kibic->jest_dzieckiem && kibic->liczba_biletow == 1) {
-    //     printf("[Dziecko %d] Czekam na opiekuna...\n", kibic->id);
-    //
-    //     // Czekaj aż opiekun zostanie przypisany
-    //     while (kibic->opiekun == nullptr) {
-    //         usleep(200000);
-    //     }
-    //     printf("[Dziecko %d] Mój opiekun to kibic %d\n", kibic->id, kibic->opiekun->id);
-    // }
+    printf("[Kibic %d] Mam %d bilet(y), idę do sektora %d\n",
+           kibic->id, kibic->liczba_biletow, kibic->sektor);
 
-    kibic_logger.log(INFO, std::format("[Kibic {}] Mam {} bilet(y), idę do sektora {}\n", kibic->id, kibic->liczba_biletow, kibic->sektor));
+    // 3. Uruchamianie wątku towarzysza/opiekuna
+    pthread_t thread_towarzysz;
+    int thread_created = 0;
+    struct ThreadArg t_arg;
 
-    // Idź do wejścia sektora
-    sem_wait(&hala->main_sem);
-    WejscieDoSektora *wejscie = &hala->wejscia[kibic->sektor];
-    wejscie->kolejka_do_kontroli[wejscie->rozmiar_kolejki++] = moj_idx;
-    int pozycja = wejscie->rozmiar_kolejki;  // Pozycja to rozmiar po dodaniu
+    // A) Towarzysz (2 bilety)
+    if (!kibic->jest_dzieckiem && kibic->liczba_biletow == 2) {
+        sem_wait_ipc(sem_id, SEM_MAIN);
+        int id_towarzysza = kibic->id_towarzysza;
+        sem_post_ipc(sem_id, SEM_MAIN);
 
-    // Jeśli kibic ma towarzysza (kupił 2 bilety) - dodaj go też
-    if (kibic->liczba_biletow > 1 && kibic->towarzysz != nullptr) {
-        int tow_idx = kibic->towarzysz - hala->kibice;  // Oblicz indeks towarzysza
-        wejscie->kolejka_do_kontroli[wejscie->rozmiar_kolejki++] = tow_idx;
+        if (id_towarzysza > 0) {
+            t_arg.hala = hala;
+            t_arg.id_kibica = id_towarzysza;
+            t_arg.id_glownego = idx;
+            t_arg.sektor = kibic->sektor;
+            t_arg.msg_id = msg_id;
+            t_arg.sem_id = sem_id;
+            t_arg.role = 0; // Towarzysz
 
-        if (kibic->jest_dzieckiem) {
-            kibic_logger.log(INFO, std::format("[Dziecko {}] Wchodzę z opiekunem {}\n", kibic->id, kibic->towarzysz->id));
+            if (pthread_create(&thread_towarzysz, NULL, watek_towarzysza, &t_arg) == 0) {
+                thread_created = 1;
+            }
         }
     }
-    sem_post(&hala->main_sem);
+    // B) Opiekun (Dziecko ma 2 bilety logicznie, 1 fizycznie w tej implementacji kasjera, ale sprawdzamy relację)
+    else if (kibic->jest_dzieckiem) {
+        sem_wait_ipc(sem_id, SEM_MAIN);
+        int id_opiekuna = kibic->id_opiekuna_ref;
+        sem_post_ipc(sem_id, SEM_MAIN);
 
-    // Czekaj na przejście kontroli
-    sem_wait(&kibic->na_hali_sem);
+        if (id_opiekuna > 0) {
+            t_arg.hala = hala;
+            t_arg.id_kibica = id_opiekuna;
+            t_arg.id_glownego = idx;
+            t_arg.sektor = kibic->sektor;
+            t_arg.msg_id = msg_id;
+            t_arg.sem_id = sem_id;
+            t_arg.role = 1; // Opiekun
 
-    kibic_logger.log(INFO, std::format("[Kibic {}] Jestem na hali w sektorze {}!\n", kibic->id, kibic->sektor));
+            if (pthread_create(&thread_towarzysz, NULL, watek_towarzysza, &t_arg) == 0) {
+                thread_created = 1;
+            }
+        }
+    }
+
+    // 4. Główny kibic idzie do wejścia
+    sem_wait_ipc(sem_id, SEM_WEJSCIA + kibic->sektor);
+    WejscieDoSektora *wejscie = &hala->wejscia[kibic->sektor];
+    wejscie->kolejka_do_kontroli[wejscie->rozmiar_kolejki++] = idx;
+    sem_post_ipc(sem_id, SEM_WEJSCIA + kibic->sektor);
+
+    // Czekaj na wpuszczenie (kanał idx + 1)
+    if (msgrcv(msg_id, &kom, sizeof(kom) - sizeof(long), idx + 1, 0) == -1) {
+        perror("msgrcv kibic kontrola");
+    } else if (kom.akcja == MSG_KONTROLA) {
+        kibic->na_hali = 1;
+        printf("[Kibic %d] Jestem na hali w sektorze %d!\n", kibic->id, kibic->sektor);
+    }
+
+    // Oglądaj mecz
+    while (!hala->mecz_zakonczony && !hala->ewakuacja) {
+        usleep(500000);
+    }
+
+    // Wyjście
+    sem_wait_ipc(sem_id, SEM_MAIN);
+    hala->kibice_na_hali--;
+    sem_post_ipc(sem_id, SEM_MAIN);
+
+    // WAŻNE: Poczekaj na wątek towarzysza
+    if (thread_created) {
+        pthread_join(thread_towarzysz, NULL);
+        printf("[Kibic %d] Wychodzę razem z towarzyszem/opiekunem.\n", idx);
+    }
+
+    shmdt(hala);
+    exit(0);
 }
 
 int main(int argc, char *argv[]) {
-    printf("[KIBIC %d] Start, argc=%d\n", getpid(), argc);
-    fflush(stdout);
-
-    if (argc < 3) {
-        fprintf(stderr, "Usage: %s <idx> <shm_id>\n", argv[0]);
-        return 1;
-    }
-    int idx = atoi(argv[1]);
-    int shm_id = atoi(argv[2]);
-
-    printf("[KIBIC %d] idx=%d, shm_id=%d\n", getpid(), idx, shm_id);
-    fflush(stdout);
-
-    Hala* hala = (Hala*)shmat(shm_id, NULL, 0);
-    if (hala == (void*)-1) {
-        perror("shmat");
-        return 1;
-    }
-
-    printf("[KIBIC %d] Podłączono do pamięci\n", getpid());
-    fflush(stdout);
-
-    Kibic *kibic = &hala->kibice[idx];
-    proces_kibica_z_kontrola(idx, kibic, hala);
+    if (argc < 5) return 1;
+    proces_kibica(atoi(argv[1]), atoi(argv[2]), atoi(argv[3]), atoi(argv[4]));
     return 0;
 }
