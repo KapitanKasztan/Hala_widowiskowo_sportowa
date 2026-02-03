@@ -1,4 +1,4 @@
-// kasjer.cpp - Wersja stabilna (korzysta z naprawionego common.h)
+// kasjer.cpp - Wersja z raportowaniem
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -9,6 +9,7 @@
 #include <string.h>
 #include <signal.h>
 #include "../include/common.h"
+#include "../include/logger.h"
 
 volatile sig_atomic_t keep_running = 1;
 
@@ -17,24 +18,7 @@ void handle_sigterm(int sig) {
     keep_running = 0;
 }
 
-typedef struct {
-    FILE *file;
-    int id;
-} Logger;
-
-void log_msg(Logger *logger, const char *level, const char *msg) {
-    time_t now = time(NULL);
-    char timestr[64];
-    strftime(timestr, sizeof(timestr), "%Y-%m-%d %H:%M:%S", localtime(&now));
-    if (logger->file) {
-        fprintf(logger->file, "[%s] [Kasa %d] [%s] %s\n", timestr, logger->id, level, msg);
-        fflush(logger->file);
-    }
-    // Opcjonalnie wyłącz printf żeby nie śmiecić w konsoli
-    // printf("[Kasa %d] %s\n", logger->id, msg);
-}
-
-bool obsluz_vip(int id, Hala *hala, Logger *logger) {
+bool obsluz_vip(int id, Hala *hala, Logger *reporter) {
     if (hala->rozmiar_kolejki_kasy_vip <= 0) return false;
 
     int id_vip = hala->kolejka_do_kasy_VIP[0];
@@ -48,18 +32,28 @@ bool obsluz_vip(int id, Hala *hala, Logger *logger) {
     long target_mtype = id_vip + VIP_MTYPE_OFFSET;
 
     if (hala->sprzedane_bilety_w_sektorze[SEKTOR_VIP] >= POJEMNOSC_VIP) {
-        log_msg(logger, "WARNING", "Brak miejsc w VIP");
-        struct moj_komunikat kom; kom.mtype = target_mtype; kom.kibic_id = id_vip; kom.akcja = 0;
+        reporter_warning(reporter, "Brak miejsc w sektorze VIP dla kibica VIP-%d", id_vip);
+        struct moj_komunikat kom;
+        kom.mtype = target_mtype;
+        kom.kibic_id = id_vip;
+        kom.akcja = 0;
         msgsnd(hala->msg_id, &kom, sizeof(kom) - sizeof(long), 0);
         return true;
     }
 
     hala->sprzedane_bilety_w_sektorze[SEKTOR_VIP]++;
     hala->sprzedane_bilety++;
-    vip->ma_bilet = 1; vip->sektor = SEKTOR_VIP; vip->liczba_biletow = 1;
+    vip->ma_bilet = 1;
+    vip->sektor = SEKTOR_VIP;
+    vip->liczba_biletow = 1;
 
-    log_msg(logger, "INFO", "VIP kupił bilet");
-    struct moj_komunikat kom; kom.mtype = target_mtype; kom.kibic_id = id_vip; kom.akcja = 1;
+    reporter_info(reporter, "Sprzedano bilet VIP dla VIP-%d (laczne VIP: %d/%d)",
+                 id_vip, hala->sprzedane_bilety_w_sektorze[SEKTOR_VIP], POJEMNOSC_VIP);
+
+    struct moj_komunikat kom;
+    kom.mtype = target_mtype;
+    kom.kibic_id = id_vip;
+    kom.akcja = 1;
     strcpy(kom.text, "Bilet VIP");
     msgsnd(hala->msg_id, &kom, sizeof(kom) - sizeof(long), 0);
     return true;
@@ -106,7 +100,6 @@ int utworz_towarzysza(Hala *hala, int id_glownego, int sektor) {
 }
 
 void proces_kasy(int id, int shm_id, int sem_id, int msg_id) {
-    // Rejestracja sygnału: jeśli przyjdzie SIGTERM, ustaw flagę końca
     struct sigaction sa;
     sa.sa_handler = handle_sigterm;
     sigemptyset(&sa.sa_mask);
@@ -116,20 +109,23 @@ void proces_kasy(int id, int shm_id, int sem_id, int msg_id) {
     Hala* hala = (Hala*)shmat(shm_id, NULL, 0);
     if (hala == (void*)-1) exit(1);
 
-    char log_filename[64];
-    snprintf(log_filename, sizeof(log_filename), "kasjer_%d.log", id);
-    Logger logger = {fopen(log_filename, "w"), id};
-    log_msg(&logger, "INFO", "Kasa otwarta");
+    Logger *reporter = reporter_init("kasjer", id);
+    if (!reporter) exit(1);
+
+    reporter_info(reporter, "Kasa otwarta, rozpoczynam obsluge");
+
+    int obsluzonych_laczni = 0;
+    int obsluzonych_vip = 0;
+    int obsluzonych_zwyklych = 0;
+    int odmow_brak_miejsc = 0;
 
     while (keep_running) {
-        // Używamy ulepszonego sem_wait z common.h
-        // Jeśli zwróci -1 (błąd lub przerwanie), sprawdzamy czy wychodzić
         if (sem_wait_ipc(sem_id, SEM_MAIN) == -1) {
-            if (!keep_running) break; // Main kazał zamknąć
-            continue; // Inny błąd, próbuj dalej
+            if (!keep_running) break;
+            continue;
         }
 
-        // 1. Koniec biletów
+        // Koniec biletów
         if (hala->sprzedane_bilety >= LIMIT_SPRZEDAZY) {
             if (hala->rozmiar_kolejki_kasy > 0) {
                 int id_kibica = hala->kolejka_do_kasy[0];
@@ -137,25 +133,33 @@ void proces_kasy(int id, int shm_id, int sem_id, int msg_id) {
                     hala->kolejka_do_kasy[j] = hala->kolejka_do_kasy[j + 1];
                 hala->rozmiar_kolejki_kasy--;
 
-                struct moj_komunikat kom; kom.mtype = id_kibica + 1; kom.akcja = 0;
+                struct moj_komunikat kom;
+                kom.mtype = id_kibica + 1;
+                kom.akcja = 0;
                 msgsnd(msg_id, &kom, sizeof(kom) - sizeof(long), IPC_NOWAIT);
+
+                odmow_brak_miejsc++;
 
                 sem_post_ipc(sem_id, SEM_MAIN);
                 continue;
             }
-            log_msg(&logger, "INFO", "Bilety wyprzedane.");
+            reporter_info(reporter, "Bilety wyprzedane - zamykanie kasy");
+            reporter_info(reporter, "Statystyki: obsluzono %d osob (VIP: %d, zwykli: %d), odmow: %d",
+                         obsluzonych_laczni, obsluzonych_vip, obsluzonych_zwyklych, odmow_brak_miejsc);
             sem_post_ipc(sem_id, SEM_MAIN);
             break;
         }
 
-        // 2. VIP
-        if (obsluz_vip(id, hala, &logger)) {
+        // Obsługa VIP
+        if (obsluz_vip(id, hala, reporter)) {
+            obsluzonych_vip++;
+            obsluzonych_laczni++;
             sem_post_ipc(sem_id, SEM_MAIN);
             usleep(200000);
             continue;
         }
 
-        // 3. Zwykli
+        // Obsługa zwykłych
         if (hala->rozmiar_kolejki_kasy > 0) {
             int id_kibica = hala->kolejka_do_kasy[0];
             Kibic* kibic = &hala->kibice[id_kibica];
@@ -165,8 +169,10 @@ void proces_kasy(int id, int shm_id, int sem_id, int msg_id) {
             hala->rozmiar_kolejki_kasy--;
 
             int liczba_biletow = 1;
-            if (kibic->jest_dzieckiem) liczba_biletow = 2;
-            else liczba_biletow = 1 + (rand() % 2);
+            if (kibic->jest_dzieckiem)
+                liczba_biletow = 2;
+            else
+                liczba_biletow = 1 + (rand() % 2);
 
             int sektor = znajdz_wolny_sektor(hala, liczba_biletow);
             if (sektor == -1 && liczba_biletow == 2 && !kibic->jest_dzieckiem) {
@@ -177,21 +183,38 @@ void proces_kasy(int id, int shm_id, int sem_id, int msg_id) {
             long target_mtype = id_kibica + 1;
 
             if (sektor == -1) {
-                struct moj_komunikat kom; kom.mtype = target_mtype; kom.akcja = 0;
+                reporter_warning(reporter, "Brak miejsc dla kibica %d", id_kibica);
+                odmow_brak_miejsc++;
+
+                struct moj_komunikat kom;
+                kom.mtype = target_mtype;
+                kom.akcja = 0;
                 msgsnd(msg_id, &kom, sizeof(kom) - sizeof(long), 0);
             } else {
                 hala->sprzedane_bilety_w_sektorze[sektor] += liczba_biletow;
                 hala->sprzedane_bilety += liczba_biletow;
-                kibic->ma_bilet = 1; kibic->sektor = sektor; kibic->liczba_biletow = liczba_biletow;
+                kibic->ma_bilet = 1;
+                kibic->sektor = sektor;
+                kibic->liczba_biletow = liczba_biletow;
 
                 if (liczba_biletow == 2) {
-                    utworz_towarzysza(hala, id_kibica, sektor);
-                    log_msg(&logger, "INFO", "Sprzedano 2 bilety");
+                    int id_towarzysza = utworz_towarzysza(hala, id_kibica, sektor);
+                    reporter_info(reporter, "Sprzedano 2 bilety: kibic %d %s (sektor %d) + towarzysz %d",
+                                 id_kibica, kibic->jest_dzieckiem ? "[DZIECKO]" : "",
+                                 sektor, id_towarzysza);
                 } else {
-                    log_msg(&logger, "INFO", "Sprzedano 1 bilet");
+                    reporter_info(reporter, "Sprzedano 1 bilet: kibic %d (sektor %d)",
+                                 id_kibica, sektor);
                 }
 
-                struct moj_komunikat kom; kom.mtype = target_mtype; kom.kibic_id = id_kibica; kom.akcja = 1; kom.sektor = sektor;
+                obsluzonych_zwyklych++;
+                obsluzonych_laczni++;
+
+                struct moj_komunikat kom;
+                kom.mtype = target_mtype;
+                kom.kibic_id = id_kibica;
+                kom.akcja = 1;
+                kom.sektor = sektor;
                 msgsnd(msg_id, &kom, sizeof(kom) - sizeof(long), 0);
             }
             sem_post_ipc(sem_id, SEM_MAIN);
@@ -202,7 +225,13 @@ void proces_kasy(int id, int shm_id, int sem_id, int msg_id) {
         }
     }
 
-    if (logger.file) fclose(logger.file);
+    reporter_info(reporter, "Kasa zamykana - statystyki koncowe:");
+    reporter_info(reporter, "  Obsluzono laczni: %d transakcji", obsluzonych_laczni);
+    reporter_info(reporter, "  Bilety VIP: %d", obsluzonych_vip);
+    reporter_info(reporter, "  Bilety zwykle: %d", obsluzonych_zwyklych);
+    reporter_info(reporter, "  Odmowy (brak miejsc): %d", odmow_brak_miejsc);
+
+    reporter_close(reporter);
     shmdt(hala);
 }
 

@@ -1,4 +1,4 @@
-// main.cpp - Wersja z poprawnym zamykaniem
+// main.cpp - Wersja z pełnym systemem raportowania
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -12,35 +12,48 @@
 #include <string.h>
 
 #include "include/common.h"
+#include "include/logger.h"
 
 volatile sig_atomic_t zakoncz = 0;
 int g_shm_id = -1, g_sem_id = -1, g_msg_id = -1;
+Logger *g_main_reporter = NULL;
+Logger *g_summary_reporter = NULL;
 
 void obsluga_sygnalu(int sig) {
-    if (sig == SIGINT || sig == SIGTERM) {
-        printf("\n[MAIN] Otrzymano sygnał %d - kończę symulację\n", sig);
+    if (sig == SIGINT) {
+        reporter_warning(g_main_reporter, "Otrzymano sygnal SIGINT - konczenie symulacji");
         zakoncz = 1;
     }
 }
 
-// Funkcja usuwająca zasoby - wywoływana TYLKO na samym końcu
 void usun_zasoby() {
-    printf("[MAIN] Usuwanie zasobów IPC...\n");
+    reporter_info(g_main_reporter, "Usuwanie zasobów IPC");
     if (g_msg_id >= 0) msgctl(g_msg_id, IPC_RMID, NULL);
     if (g_sem_id >= 0) semctl(g_sem_id, 0, IPC_RMID);
     if (g_shm_id >= 0) shmctl(g_shm_id, IPC_RMID, NULL);
-    printf("[MAIN] Zasoby usunięte.\n");
+    reporter_info(g_main_reporter, "Zasoby IPC usuniete");
 }
 
 void wyswietl_status(Hala *hala) {
     sem_wait_ipc(hala->sem_id, SEM_MAIN);
+
     printf("\n=== STATUS ===\n");
-    printf("Sprzedane: %d/%d | Na hali: %d\n", hala->sprzedane_bilety, LIMIT_SPRZEDAZY, hala->kibice_na_hali);
-    printf("Otwarte kasy: %d | Kolejka: %d\n", hala->otwarte_kasy, hala->rozmiar_kolejki_kasy);
+    printf("Sprzedane: %d/%d | Na hali: %d\n",
+           hala->sprzedane_bilety, LIMIT_SPRZEDAZY, hala->kibice_na_hali);
+    printf("Otwarte kasy: %d | Kolejka: %d\n",
+           hala->otwarte_kasy, hala->rozmiar_kolejki_kasy);
     printf("Sektory: ");
-    for (int i = 0; i < LICZBA_SEKTOROW; i++) printf("[%d:%d] ", i, hala->sprzedane_bilety_w_sektorze[i]);
+    for (int i = 0; i < LICZBA_SEKTOROW; i++)
+        printf("[%d:%d] ", i, hala->sprzedane_bilety_w_sektorze[i]);
     printf("[VIP:%d]\n", hala->sprzedane_bilety_w_sektorze[SEKTOR_VIP]);
     printf("===============\n");
+
+    // Raportowanie do pliku
+    reporter_info(g_main_reporter,
+                  "STATUS - Sprzedane: %d/%d, Na hali: %d, Kasy: %d, Kolejka: %d",
+                  hala->sprzedane_bilety, LIMIT_SPRZEDAZY, hala->kibice_na_hali,
+                  hala->otwarte_kasy, hala->rozmiar_kolejki_kasy);
+
     sem_post_ipc(hala->sem_id, SEM_MAIN);
 }
 
@@ -64,7 +77,10 @@ void aktualizuj_kasy(Hala *hala) {
         pid_t pid = fork();
         if (pid == 0) {
             char id[16], s1[16], s2[16], s3[16];
-            sprintf(id, "%d", nowe_id); sprintf(s1, "%d", g_shm_id); sprintf(s2, "%d", g_sem_id); sprintf(s3, "%d", g_msg_id);
+            sprintf(id, "%d", nowe_id);
+            sprintf(s1, "%d", g_shm_id);
+            sprintf(s2, "%d", g_sem_id);
+            sprintf(s3, "%d", g_msg_id);
             execl("./kasjer", "kasjer", id, s1, s2, s3, NULL);
             exit(1);
         }
@@ -72,7 +88,10 @@ void aktualizuj_kasy(Hala *hala) {
         hala->kasy_pids[aktywne] = pid;
         hala->otwarte_kasy++;
         sem_post_ipc(g_sem_id, SEM_MAIN);
-        printf("[MAIN] +++ Otwieram kasę nr %d (Kolejka: %d)\n", nowe_id, kolejka);
+
+        printf("[MAIN] +++ Otwieram kase nr %d (Kolejka: %d)\n", nowe_id, kolejka);
+        reporter_info(g_main_reporter, "Otwarto kase nr %d (kolejka: %d osob)", nowe_id, kolejka);
+
         aktywne++;
     }
 
@@ -89,27 +108,89 @@ void aktualizuj_kasy(Hala *hala) {
             hala->otwarte_kasy--;
             hala->kasy_pids[idx_do_zamkniecia] = 0;
             sem_post_ipc(g_sem_id, SEM_MAIN);
-            printf("[MAIN] --- Zamykam kasę nr %d (Mały ruch: %d)\n", idx_do_zamkniecia + 1, kolejka);
+
+            printf("[MAIN] --- Zamykam kase nr %d (Maly ruch: %d)\n",
+                   idx_do_zamkniecia + 1, kolejka);
+            reporter_info(g_main_reporter, "Zamknieto kase nr %d (maly ruch: %d osob)",
+                         idx_do_zamkniecia + 1, kolejka);
         }
     }
 }
 
+void uruchom_kierownika(int shm_id, int sem_id, int msg_id) {
+    if (fork() == 0) {
+        char s1[16], s2[16], s3[16];
+        sprintf(s1, "%d", shm_id);
+        sprintf(s2, "%d", sem_id);
+        sprintf(s3, "%d", msg_id);
+        execl("./kierownik", "kierownik", s1, s2, s3, NULL);
+        exit(1);
+    }
+    reporter_info(g_main_reporter, "Uruchomiono kierownika");
+}
+
+void uruchom_sektory(int shm_id, int sem_id, int msg_id) {
+    for (int s = 0; s < LICZBA_SEKTOROW; s++) {
+        for (int st = 0; st < STANOWISKA_NA_SEKTOR; st++) {
+            if (fork() == 0) {
+                char sek[16], sta[16], s1[16], s2[16], s3[16];
+                sprintf(sek, "%d", s);
+                sprintf(sta, "%d", st);
+                sprintf(s1, "%d", shm_id);
+                sprintf(s2, "%d", sem_id);
+                sprintf(s3, "%d", msg_id);
+                execl("./pracownik_techniczny", "pracownik_techniczny",
+                      sek, sta, s1, s2, s3, NULL);
+                exit(1);
+            }
+        }
+    }
+    reporter_info(g_main_reporter, "Uruchomiono %d pracownikow technicznych na %d sektorach",
+                 LICZBA_SEKTOROW * STANOWISKA_NA_SEKTOR, LICZBA_SEKTOROW);
+}
+
+void uruchom_kasy_startowe(Hala *hala, int shm_id, int sem_id, int msg_id) {
+    for (int i = 0; i < 2; i++) {
+        pid_t pid = fork();
+        if (pid == 0) {
+            char id[16], s1[16], s2[16], s3[16];
+            sprintf(id, "%d", i + 1);
+            sprintf(s1, "%d", shm_id);
+            sprintf(s2, "%d", sem_id);
+            sprintf(s3, "%d", msg_id);
+            execl("./kasjer", "kasjer", id, s1, s2, s3, NULL);
+            exit(1);
+        }
+        hala->kasy_pids[i] = pid;
+        hala->otwarte_kasy++;
+    }
+    reporter_info(g_main_reporter, "Otwarto 2 startowe kasy biletowe");
+}
+
 void proces_generatora(int shm_id, int sem_id, int msg_id) {
     srand(getpid());
+
     for (int i = 0; i < K_KIBICOW; i++) {
         usleep(rand() % 150000);
         if (fork() == 0) {
             char idx[16], s1[16], s2[16], s3[16];
-            sprintf(idx, "%d", i); sprintf(s1, "%d", shm_id); sprintf(s2, "%d", sem_id); sprintf(s3, "%d", msg_id);
+            sprintf(idx, "%d", i);
+            sprintf(s1, "%d", shm_id);
+            sprintf(s2, "%d", sem_id);
+            sprintf(s3, "%d", msg_id);
             execl("./kibic", "kibic", idx, s1, s2, s3, NULL);
             exit(1);
         }
     }
+
     for (int i = 0; i < POJEMNOSC_VIP; i++) {
         usleep(rand() % 300000);
         if (fork() == 0) {
             char idx[16], s1[16], s2[16], s3[16];
-            sprintf(idx, "%d", i); sprintf(s1, "%d", shm_id); sprintf(s2, "%d", sem_id); sprintf(s3, "%d", msg_id);
+            sprintf(idx, "%d", i);
+            sprintf(s1, "%d", shm_id);
+            sprintf(s2, "%d", sem_id);
+            sprintf(s3, "%d", msg_id);
             execl("./kibic_vip", "kibic_vip", idx, s1, s2, s3, NULL);
             exit(1);
         }
@@ -122,98 +203,222 @@ bool init_ipc(Hala *&hala) {
     g_shm_id = shmget(k1, sizeof(Hala), IPC_CREAT|0666);
     g_sem_id = semget(k2, LICZBA_SEMAFOROW, IPC_CREAT|0666);
     g_msg_id = msgget(k3, IPC_CREAT|0666);
-    if(g_shm_id<0||g_sem_id<0||g_msg_id<0) return false;
+
+    if(g_shm_id<0||g_sem_id<0||g_msg_id<0) {
+        reporter_error(g_main_reporter, "Blad inicjalizacji IPC: shm=%d, sem=%d, msg=%d",
+                      g_shm_id, g_sem_id, g_msg_id);
+        return false;
+    }
+
     hala = (Hala*)shmat(g_shm_id,NULL,0);
     sem_init_ipc(g_sem_id, SEM_MAIN, 1);
     sem_init_ipc(g_sem_id, SEM_KASY, 1);
     sem_init_ipc(g_sem_id, SEM_KOLEJKA, 1);
     for(int i=0;i<LICZBA_SEKTOROW;i++) sem_init_ipc(g_sem_id, SEM_WEJSCIA+i, 1);
+
     memset(hala,0,sizeof(Hala));
     hala->shm_key=k1; hala->sem_key=k2; hala->msg_key=k3;
     hala->shm_id=g_shm_id; hala->sem_id=g_sem_id; hala->msg_id=g_msg_id;
+
+    reporter_info(g_main_reporter, "Zainicjalizowano IPC: shm_id=%d, sem_id=%d, msg_id=%d",
+                 g_shm_id, g_sem_id, g_msg_id);
     return true;
 }
 
-int main(int argc, char *argv[]) {
-    int czas_tp = 5;
-    if (argc > 1) czas_tp = atoi(argv[1]);
-
-    srand(time(NULL));
-    struct sigaction sa; sa.sa_handler = obsluga_sygnalu; sigemptyset(&sa.sa_mask); sa.sa_flags = 0;
-    sigaction(SIGINT, &sa, NULL); sigaction(SIGTERM, &sa, NULL);
-
-    // UWAGA: Usunąłem atexit(sprzatanie), żeby kontrolować moment usunięcia ręcznie!
-
-    Hala *hala;
-    if (!init_ipc(hala)) return 1;
+void inicjalizuj_kibicow(Hala *hala) {
+    int liczba_dzieci = 0;
 
     for (int i = 0; i < K_KIBICOW; i++) {
         hala->kibice[i].id = i;
         hala->kibice[i].druzyna = i % 2;
         hala->kibice[i].sektor = -1;
         hala->kibice[i].jest_dzieckiem = (rand() % 100 < 10) ? 1 : 0;
+        if (hala->kibice[i].jest_dzieckiem) liczba_dzieci++;
     }
     hala->liczba_kibicow = K_KIBICOW;
+
     for (int i = 0; i < POJEMNOSC_VIP; i++) {
         hala->kibice_vip[i].id = i;
         hala->kibice_vip[i].sektor = SEKTOR_VIP;
     }
 
-    if (fork() == 0) {
-        char s1[16],s2[16],s3[16]; sprintf(s1,"%d",g_shm_id); sprintf(s2,"%d",g_sem_id); sprintf(s3,"%d",g_msg_id);
-        execl("./kierownik", "kierownik", s1, s2, s3, NULL); exit(1);
+    reporter_info(g_main_reporter, "Zainicjalizowano kibicow: zwykli=%d (w tym dzieci=%d), VIP=%d",
+                 K_KIBICOW, liczba_dzieci, POJEMNOSC_VIP);
+}
+
+void zapisz_statystyki_meczu(int numer_meczu, Hala *hala, time_t start, time_t koniec) {
+    double czas_trwania = difftime(koniec, start);
+
+    sem_wait_ipc(g_sem_id, SEM_MAIN);
+
+    reporter_info(g_summary_reporter, "========================================");
+    reporter_info(g_summary_reporter, "RAPORT KONCOWY - MECZ #%d", numer_meczu);
+    reporter_info(g_summary_reporter, "========================================");
+    reporter_info(g_summary_reporter, "Czas trwania symulacji: %.0f sekund", czas_trwania);
+    reporter_info(g_summary_reporter, "Sprzedane bilety: %d/%d (%.1f%%)",
+                 hala->sprzedane_bilety, LIMIT_SPRZEDAZY,
+                 (hala->sprzedane_bilety * 100.0) / LIMIT_SPRZEDAZY);
+    reporter_info(g_summary_reporter, "Kibicow na hali: %d", hala->kibice_na_hali);
+    reporter_info(g_summary_reporter, "Maksymalna liczba otwartych kas: %d", hala->otwarte_kasy);
+
+    reporter_info(g_summary_reporter, "");
+    reporter_info(g_summary_reporter, "Zapelnienie sektorow:");
+    for (int i = 0; i < LICZBA_SEKTOROW; i++) {
+        int sprzedane = hala->sprzedane_bilety_w_sektorze[i];
+        double procent = (sprzedane * 100.0) / POJEMNOSC_SEKTORA;
+        reporter_info(g_summary_reporter, "  Sektor %d: %d/%d (%.1f%%)",
+                     i, sprzedane, POJEMNOSC_SEKTORA, procent);
     }
-    for (int s=0; s<LICZBA_SEKTOROW; s++) {
-        for (int st=0; st<STANOWISKA_NA_SEKTOR; st++) {
-            if (fork() == 0) {
-                char sek[16],sta[16],s1[16],s2[16],s3[16];
-                sprintf(sek,"%d",s); sprintf(sta,"%d",st); sprintf(s1,"%d",g_shm_id); sprintf(s2,"%d",g_sem_id); sprintf(s3,"%d",g_msg_id);
-                execl("./pracownik_techniczny", "pracownik_techniczny", sek, sta, s1, s2, s3, NULL); exit(1);
-            }
-        }
+
+    int vip_sprzedane = hala->sprzedane_bilety_w_sektorze[SEKTOR_VIP];
+    double vip_procent = (vip_sprzedane * 100.0) / POJEMNOSC_VIP;
+    reporter_info(g_summary_reporter, "  Sektor VIP: %d/%d (%.1f%%)",
+                 vip_sprzedane, POJEMNOSC_VIP, vip_procent);
+
+    reporter_info(g_summary_reporter, "========================================");
+
+    sem_post_ipc(g_sem_id, SEM_MAIN);
+}
+
+int main(int argc, char *argv[]) {
+    int czas_tp = 5;
+    int tryb_nieskonczonosci = 0;
+
+    if (argc > 1) czas_tp = atoi(argv[1]);
+    if (argc > 2 && strcmp(argv[2], "--infinite") == 0) {
+        tryb_nieskonczonosci = 1;
+        printf("\n[MAIN] TRYB NIESKONCZONY - Mecze beda sie powtarzac!\n");
+        printf("[MAIN] Uzyj Ctrl+C aby zakonczyc\n\n");
     }
 
-    for (int i=0; i<2; i++) {
-        pid_t pid = fork();
-        if (pid == 0) {
-            char id[16],s1[16],s2[16],s3[16];
-            sprintf(id,"%d",i+1); sprintf(s1,"%d",g_shm_id); sprintf(s2,"%d",g_sem_id); sprintf(s3,"%d",g_msg_id);
-            execl("./kasjer", "kasjer", id, s1, s2, s3, NULL); exit(1);
-        }
-        hala->kasy_pids[i] = pid;
-        hala->otwarte_kasy++;
+    srand(time(NULL));
+
+    // Inicjalizacja raportowania
+    g_main_reporter = reporter_init("main", -1);
+    g_summary_reporter = reporter_init("summary", -1);
+
+    if (!g_main_reporter || !g_summary_reporter) {
+        fprintf(stderr, "Blad inicjalizacji systemu raportowania\n");
+        return 1;
     }
 
-    if (fork() == 0) proces_generatora(g_shm_id, g_sem_id, g_msg_id);
+    reporter_info(g_main_reporter, "========================================");
+    reporter_info(g_main_reporter, "START SYMULACJI HALI WIDOWISKOWO-SPORTOWEJ");
+    reporter_info(g_main_reporter, "========================================");
+    reporter_info(g_main_reporter, "Tryb: %s", tryb_nieskonczonosci ? "NIESKONCZONY" : "POJEDYNCZY MECZ");
+    reporter_info(g_main_reporter, "Czas przed rozpoczeciem: %d sekund", czas_tp);
+    reporter_info(g_main_reporter, "Pojemnosc: %d kibicow zwyklych + %d VIP = %d miejsc",
+                 K_KIBICOW, POJEMNOSC_VIP, LIMIT_SPRZEDAZY);
 
-    printf("\n[MAIN] Start meczu za %d s...\n", czas_tp);
-    sleep(czas_tp);
-    hala->mecz_rozpoczety = 1;
+    struct sigaction sa;
+    sa.sa_handler = obsluga_sygnalu;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+    signal(SIGTERM, SIG_IGN);
 
-    while (!zakoncz) {
-        wyswietl_status(hala);
-        aktualizuj_kasy(hala);
+    int numer_meczu = 1;
 
-        sem_wait_ipc(hala->sem_id, SEM_MAIN);
-        int na_hali = hala->kibice_na_hali;
-        int sprzedane = hala->sprzedane_bilety;
-        sem_post_ipc(hala->sem_id, SEM_MAIN);
+    while (1) {
+        time_t start_meczu = time(NULL);
 
-        if (na_hali >= sprzedane && sprzedane >= LIMIT_SPRZEDAZY) {
-            printf("[MAIN] SUKCES: %d/%d (100%%)\n", na_hali, LIMIT_SPRZEDAZY);
+        printf("\n");
+        printf("MECZ #%-3d - START SYMULACJI\n", numer_meczu);
+
+        reporter_info(g_main_reporter, "");
+        reporter_info(g_main_reporter, "========================================");
+        reporter_info(g_main_reporter, "MECZ #%d - ROZPOCZECIE", numer_meczu);
+        reporter_info(g_main_reporter, "========================================");
+
+        Hala *hala;
+        if (!init_ipc(hala)) {
+            printf("[MAIN] Blad inicjalizacji IPC!\n");
+            reporter_critical(g_main_reporter, "Krytyczny blad inicjalizacji IPC");
             break;
         }
-        sleep(2);
+
+        inicjalizuj_kibicow(hala);
+        uruchom_kierownika(g_shm_id, g_sem_id, g_msg_id);
+        uruchom_sektory(g_shm_id, g_sem_id, g_msg_id);
+        uruchom_kasy_startowe(hala, g_shm_id, g_sem_id, g_msg_id);
+
+        reporter_info(g_main_reporter, "Uruchamianie generatora kibicow");
+        if (fork() == 0) proces_generatora(g_shm_id, g_sem_id, g_msg_id);
+
+        printf("\n[MAIN] Start meczu za %d s...\n", czas_tp);
+        reporter_info(g_main_reporter, "Oczekiwanie %d sekund przed rozpoczeciem meczu", czas_tp);
+        sleep(czas_tp);
+
+        hala->mecz_rozpoczety = 1;
+        reporter_info(g_main_reporter, "MECZ ROZPOCZETY - sprzedaz biletow i wpuszczanie na hale");
+
+        int licznik_statusow = 0;
+        while (!zakoncz) {
+            wyswietl_status(hala);
+            aktualizuj_kasy(hala);
+
+            sem_wait_ipc(hala->sem_id, SEM_MAIN);
+            int na_hali = hala->kibice_na_hali;
+            int sprzedane = hala->sprzedane_bilety;
+            sem_post_ipc(hala->sem_id, SEM_MAIN);
+
+            if (na_hali >= sprzedane && sprzedane >= LIMIT_SPRZEDAZY) {
+                printf("\n[MAIN] SUKCES: %d/%d (100%%)\n", na_hali, LIMIT_SPRZEDAZY);
+                reporter_info(g_main_reporter, "SUKCES: Wszyscy kibice na hali (%d/%d)",
+                             na_hali, LIMIT_SPRZEDAZY);
+                break;
+            }
+
+            licznik_statusow++;
+            sleep(2);
+        }
+
+        time_t koniec_meczu = time(NULL);
+
+        printf("\n[MAIN] Koniec meczu #%d. Zabijam procesy...\n", numer_meczu);
+        reporter_info(g_main_reporter, "Koniec meczu #%d - zamykanie procesow", numer_meczu);
+
+        signal(SIGTERM, SIG_DFL);
+        kill(0, SIGTERM);
+        signal(SIGTERM, SIG_IGN);
+
+        while (wait(NULL) > 0);
+
+        // Zapisz statystyki
+        zapisz_statystyki_meczu(numer_meczu, hala, start_meczu, koniec_meczu);
+
+        usun_zasoby();
+        shmdt(hala);
+
+        printf("\n");
+        printf("MECZ #%-3d ZAKONCZONY\n", numer_meczu);
+
+        if (!tryb_nieskonczonosci) {
+            reporter_info(g_main_reporter, "Koniec symulacji (tryb pojedynczego meczu)");
+            break;
+        }
+
+        if (zakoncz) {
+            reporter_warning(g_main_reporter, "Przerwanie przez uzytkownika (Ctrl+C)");
+            break;
+        }
+
+        numer_meczu++;
+        printf("\n[MAIN] Przerwa 3 sekundy przed nastepnym meczem...\n");
+        reporter_info(g_main_reporter, "Przerwa 3 sekundy przed meczem #%d", numer_meczu);
+        sleep(3);
     }
 
-    printf("\n[MAIN] Koniec. Zabijam procesy...\n");
-    kill(0, SIGTERM);
+    reporter_info(g_main_reporter, "");
+    reporter_info(g_main_reporter, "========================================");
+    reporter_info(g_main_reporter, "ZAKONCZENIE SYMULACJI");
+    reporter_info(g_main_reporter, "========================================");
+    reporter_info(g_main_reporter, "Lacznie rozegrano: %d mecz(y/ow)", numer_meczu);
 
-    // Czekamy aż wszystko zdechnie, żeby nie usunąć semaforów pod nogami
-    while (wait(NULL) > 0);
+    printf("\n[MAIN] Program zakonczony. Lacznie rozegrano %d mecz(y/ow).\n\n", numer_meczu);
 
-    // DOPIERO TERAZ usuwamy IPC
-    usun_zasoby();
-    shmdt(hala);
+    reporter_close(g_main_reporter);
+    reporter_close(g_summary_reporter);
+
     return 0;
 }
