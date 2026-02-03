@@ -334,12 +334,30 @@ int main(int argc, char *argv[]) {
 
         printf("\n[MAIN] Koniec meczu\n");
 
-        signal(SIGTERM, SIG_DFL);
-        kill(0, SIGTERM);
-        signal(SIGTERM, SIG_IGN);
+        // Zabij kierownika
+        if (hala->kierownik_pid > 0) {
+            kill(hala->kierownik_pid, SIGKILL);
+        }
 
+        // Zabij kasy
+        for (int i = 0; i < LICZBA_KAS; i++) {
+            if (hala->kasy_pids[i] > 0) {
+                kill(hala->kasy_pids[i], SIGKILL);
+            }
+        }
+
+        // Zabij pracowników sektorów
+        for (int s = 0; s < LICZBA_SEKTOROW; s++) {
+            for (int st = 0; st < STANOWISKA_NA_SEKTOR; st++) {
+                pid_t pid = hala->wejscia[s].pracownik_pids[st];
+                if (pid > 0) {
+                    kill(pid, SIGKILL);
+                }
+            }
+        }
+
+        // Poczekaj na wszystkie procesy potomne
         while (wait(NULL) > 0);
-
         zapisz_statystyki(nr, hala, start, koniec);
 
         usun_zasoby();
