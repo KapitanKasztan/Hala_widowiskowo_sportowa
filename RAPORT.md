@@ -219,7 +219,7 @@ Implementacja wymogu unikania agresji kibiców:
 
 ### Wymagania
 - CMake 4.0+
-- Kompilator C++ z obsługą C++20 (GCC 10+ lub Clang 10+)
+- Kompilator C++ z obsługą C++20 (GCC 11+ lub Clang 10+)
 - System Linux/Unix (używa IPC POSIX)
 
 ### Budowanie
