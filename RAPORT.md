@@ -130,7 +130,7 @@ Testy jednostkowe pokrywające wszystkie wymagania:
 ### Problem 1: Nieskończona pętla w procesie głównym
 **Opis**: Proces główny nie kończył się prawidłowo po wyprzedaniu biletów  
 **Przyczyna**: Błędny warunek sprawdzający zakończenie symulacji  
-**Rozwiązanie**: Naprawiono w commicie "naprawiono nieskończoną pętle" - dodano poprawny warunek: `if (na_hali >= sprzedane && sprzedane >= LIMIT_SPRZEDAZY)`
+**Rozwiązanie**: Naprawiono w commicie "naprawiono nieskończoną pętlę" - dodano poprawny warunek: `if (na_hali >= sprzedane && sprzedane >= LIMIT_SPRZEDAZY)`
 
 ### Problem 2: Race conditions w dostępie do shared memory
 **Opis**: Jednoczesny dostęp wielu procesów powodował niespójność danych  
