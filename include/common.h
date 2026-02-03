@@ -1,4 +1,3 @@
-// include/common.h - Wersja kuloodporna (Ignoruje błędy przy zamykaniu)
 #pragma once
 
 #include <errno.h>
@@ -106,7 +105,6 @@ typedef struct {
     int kolejka_do_kasy_VIP[POJEMNOSC_VIP];
     int rozmiar_kolejki_kasy;
     int rozmiar_kolejki_kasy_vip;
-
     WejscieDoSektora wejscia[LICZBA_SEKTOROW];
 
     int kibice_na_hali;
@@ -131,17 +129,15 @@ typedef struct {
     int shm_id;
 } Hala;
 
-// === NAPRAWIONE FUNKCJE SEMAFORÓW ===
-// Ignorują błędy związane z usuwaniem semaforów (EINVAL, EIDRM)
-
+// semafory
 static inline int sem_wait_ipc(int sem_id, int sem_num) {
     struct sembuf op;
     op.sem_num = sem_num;
     op.sem_op = -1;
     op.sem_flg = 0;
     while (semop(sem_id, &op, 1) == -1) {
-        if (errno == EINTR) continue; // Przerwanie sygnałem - próbuj dalej
-        if (errno == EINVAL || errno == EIDRM) return -1; // Semafor usunięty - ciche wyjście
+        if (errno == EINTR) continue;
+        if (errno == EINVAL || errno == EIDRM) return -1;
         perror("semop wait");
         return -1;
     }
@@ -155,7 +151,7 @@ static inline int sem_post_ipc(int sem_id, int sem_num) {
     op.sem_flg = 0;
     while (semop(sem_id, &op, 1) == -1) {
         if (errno == EINTR) continue;
-        if (errno == EINVAL || errno == EIDRM) return -1; // Semafor usunięty - ciche wyjście
+        if (errno == EINVAL || errno == EIDRM) return -1;
         perror("semop post");
         return -1;
     }

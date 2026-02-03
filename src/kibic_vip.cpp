@@ -1,4 +1,3 @@
-// kibic_vip.cpp - Wersja zsynchronizowana
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -14,7 +13,7 @@ void proces_kibica_vip(int idx, int shm_id, int sem_id, int msg_id) {
     Kibic *kibic_vip = &hala->kibice_vip[idx];
     kibic_vip->pid = getpid();
 
-    // Wchodzi do kolejki VIP
+    // kolejka VIP
     sem_wait_ipc(sem_id, SEM_MAIN);
     hala->kolejka_do_kasy_VIP[hala->rozmiar_kolejki_kasy_vip++] = idx;
     int pozycja = hala->rozmiar_kolejki_kasy_vip;
@@ -22,8 +21,6 @@ void proces_kibica_vip(int idx, int shm_id, int sem_id, int msg_id) {
 
     printf("[VIP %d] Czekam na bilet (Kolejka VIP poz: %d)\n", idx, pozycja);
 
-    // ODBIÓR NA KANALE OFFSETOWANYM
-    // Musi być zgodny z tym, co wysyła Kasjer
     long my_mtype = idx + VIP_MTYPE_OFFSET;
 
     struct moj_komunikat kom;
@@ -34,14 +31,14 @@ void proces_kibica_vip(int idx, int shm_id, int sem_id, int msg_id) {
     }
 
     if (kom.akcja == 0) {
-        printf("[VIP %d] Brak biletów VIP. Odchodzę!\n", idx);
+        printf("[VIP %d] Brak biletow VIP. Odchodze!\n", idx);
         shmdt(hala);
         exit(0);
     }
 
-    printf("[VIP %d] Otrzymałem bilet! Wchodzę na halę.\n", idx);
+    printf("[VIP %d] Otrzymalem bilet! Wchodze na hale.\n", idx);
 
-    // Wchodzi na halę (zwiększa licznik, na który czeka Main)
+    // wchodzi na hale
     sem_wait_ipc(sem_id, SEM_MAIN);
     hala->kibice_na_hali++;
     hala->kibice_w_sektorze[SEKTOR_VIP][hala->kibice_w_sektorze_ilosc[SEKTOR_VIP]++] = idx;
@@ -51,7 +48,6 @@ void proces_kibica_vip(int idx, int shm_id, int sem_id, int msg_id) {
 
     printf("[VIP %d] Jestem w sektorze VIP!\n", idx);
 
-    // Oglądanie meczu
     while (!hala->mecz_zakonczony && !hala->ewakuacja) {
         usleep(500000);
     }

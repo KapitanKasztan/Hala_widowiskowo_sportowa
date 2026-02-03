@@ -1,4 +1,3 @@
-// kierownik.cpp - Wersja z raportowaniem
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -27,18 +26,18 @@ void obsluga_potwierdzenia(int sig, siginfo_t *info, void *context) {
         int sektor = info->si_value.sival_int;
         if (sektor >= 0 && sektor < LICZBA_SEKTOROW) {
             sektor_oproznieny[sektor] = 1;
-            reporter_info(g_reporter, "Otrzymano potwierdzenie oproznienia sektora %d", sektor);
+            reporter_info(g_reporter, "Potwierdzenie oproznienia sektora %d", sektor);
         }
     }
 }
 
 void wstrzymaj_sektor(int sektor) {
     if (sektor < 0 || sektor >= LICZBA_SEKTOROW) {
-        reporter_error(g_reporter, "Bledny numer sektora: %d", sektor);
+        reporter_error(g_reporter, "Bledny sektor: %d", sektor);
         return;
     }
 
-    reporter_info(g_reporter, "Wstrzymanie wpuszczania do sektora %d", sektor);
+    reporter_info(g_reporter, "Wstrzymanie sektora %d", sektor);
 
     sem_wait_ipc(g_sem_id, SEM_WEJSCIA + sektor);
     g_hala->wejscia[sektor].wstrzymane = 1;
@@ -54,11 +53,11 @@ void wstrzymaj_sektor(int sektor) {
 
 void wznow_sektor(int sektor) {
     if (sektor < 0 || sektor >= LICZBA_SEKTOROW) {
-        reporter_error(g_reporter, "Bledny numer sektora: %d", sektor);
+        reporter_error(g_reporter, "Bledny sektor: %d", sektor);
         return;
     }
 
-    reporter_info(g_reporter, "Wznowienie wpuszczania do sektora %d", sektor);
+    reporter_info(g_reporter, "Wznowienie sektora %d", sektor);
 
     sem_wait_ipc(g_sem_id, SEM_WEJSCIA + sektor);
     g_hala->wejscia[sektor].wstrzymane = 0;
@@ -74,11 +73,11 @@ void wznow_sektor(int sektor) {
 
 void ewakuuj_sektor(int sektor) {
     if (sektor < 0 || sektor >= LICZBA_SEKTOROW) {
-        reporter_error(g_reporter, "Bledny numer sektora: %d", sektor);
+        reporter_error(g_reporter, "Bledny sektor: %d", sektor);
         return;
     }
 
-    reporter_warning(g_reporter, "EWAKUACJA sektora %d", sektor);
+    reporter_warning(g_reporter, "Ewakuacja sektora %d", sektor);
 
     sem_wait_ipc(g_sem_id, SEM_WEJSCIA + sektor);
     g_hala->wejscia[sektor].wstrzymane = 1;
@@ -97,7 +96,7 @@ void ewakuuj_sektor(int sektor) {
 }
 
 void ewakuuj_cala_hale() {
-    reporter_critical(g_reporter, "EWAKUACJA CALEJ HALI - rozpoczecie procedury");
+    reporter_critical(g_reporter, "Ewakuacja calej hali");
 
     sem_wait_ipc(g_sem_id, SEM_MAIN);
     g_hala->ewakuacja = 1;
@@ -107,7 +106,7 @@ void ewakuuj_cala_hale() {
         ewakuuj_sektor(i);
     }
 
-    reporter_info(g_reporter, "Wyslano polecenia ewakuacji do wszystkich sektorow");
+    reporter_info(g_reporter, "Polecenia ewakuacji wyslane");
 }
 
 int czy_sektor_oproznieny(int sektor) {
@@ -125,7 +124,7 @@ int czy_wszystkie_sektory_oprozniaje() {
 void proces_kierownika(int shm_id, int sem_id, int msg_id) {
     g_hala = (Hala*)shmat(shm_id, NULL, 0);
     if (g_hala == (void*)-1) {
-        perror("shmat kierownik");
+        perror("shmat");
         exit(1);
     }
 
@@ -141,7 +140,7 @@ void proces_kierownika(int shm_id, int sem_id, int msg_id) {
     sigemptyset(&sa.sa_mask);
     sigaction(SIGRTMIN + 1, &sa, NULL);
 
-    reporter_info(g_reporter, "Kierownik rozpoczyna prace, PID: %d", getpid());
+    reporter_info(g_reporter, "Kierownik PID: %d", getpid());
     g_hala->kierownik_pid = getpid();
 
     int czas_pracy = 0;
@@ -154,7 +153,7 @@ void proces_kierownika(int shm_id, int sem_id, int msg_id) {
         for (int s = 0; s < LICZBA_SEKTOROW; s++) {
             int zapelnienie = g_hala->kibice_w_sektorze_ilosc[s];
 
-            // Wstrzymanie jeśli pełny
+            // wstrzymaj jesli pelny
             if (zapelnienie >= POJEMNOSC_SEKTORA) {
                 if (!g_hala->wejscia[s].wstrzymane) {
                     sem_post_ipc(sem_id, SEM_MAIN);
@@ -164,7 +163,7 @@ void proces_kierownika(int shm_id, int sem_id, int msg_id) {
                 }
             }
 
-            // Wznowienie jeśli są miejsca
+            // wznow jesli sa miejsca
             if (zapelnienie < POJEMNOSC_SEKTORA * 0.9) {
                 if (g_hala->wejscia[s].wstrzymane) {
                     sem_post_ipc(sem_id, SEM_MAIN);
@@ -175,9 +174,9 @@ void proces_kierownika(int shm_id, int sem_id, int msg_id) {
             }
         }
 
-        // Symulacja incydentu (bardzo rzadko)
+        // losowy incydent
         if (czas_pracy > 30 && (rand() % 1000) == 0) {
-            reporter_critical(g_reporter, "WYKRYTO ZAGROZENIE - zarzadzanie ewakuacja");
+            reporter_critical(g_reporter, "Zagrozenie wykryte");
             sem_post_ipc(sem_id, SEM_MAIN);
             ewakuuj_cala_hale();
             break;
@@ -189,10 +188,10 @@ void proces_kierownika(int shm_id, int sem_id, int msg_id) {
     }
 
     if (g_hala->mecz_zakonczony && !g_hala->ewakuacja) {
-        reporter_info(g_reporter, "Mecz zakonczony - opuszczanie hali");
+        reporter_info(g_reporter, "Koniec meczu");
         ewakuuj_cala_hale();
 
-        reporter_info(g_reporter, "Oczekiwanie na oproznienie wszystkich sektorow");
+        reporter_info(g_reporter, "Czekam na oproznienie");
         int timeout = 60;
         while (!czy_wszystkie_sektory_oprozniaje() && timeout > 0) {
             usleep(500000);
@@ -200,16 +199,14 @@ void proces_kierownika(int shm_id, int sem_id, int msg_id) {
         }
 
         if (czy_wszystkie_sektory_oprozniaje()) {
-            reporter_info(g_reporter, "Wszystkie sektory oproznioje");
+            reporter_info(g_reporter, "Sektory oproznioje");
         } else {
-            reporter_warning(g_reporter, "Timeout - nie wszystkie sektory oproznioje");
+            reporter_warning(g_reporter, "Timeout");
         }
     }
 
-    reporter_info(g_reporter, "Statystyki kierownika:");
-    reporter_info(g_reporter, "  Czas pracy: %d sekund", czas_pracy);
-    reporter_info(g_reporter, "  Wstrzyman wpuszczania: %d", liczba_wstrzyman);
-    reporter_info(g_reporter, "  Wznowien wpuszczania: %d", liczba_wznowien);
+    reporter_info(g_reporter, "Statystyki: %ds, %d wstrzyman, %d wznowien",
+                 czas_pracy, liczba_wstrzyman, liczba_wznowien);
 
     reporter_close(g_reporter);
     shmdt(g_hala);
@@ -222,10 +219,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    int shm_id = atoi(argv[1]);
-    int sem_id = atoi(argv[2]);
-    int msg_id = atoi(argv[3]);
-
-    proces_kierownika(shm_id, sem_id, msg_id);
+    proces_kierownika(atoi(argv[1]), atoi(argv[2]), atoi(argv[3]));
     return 0;
 }

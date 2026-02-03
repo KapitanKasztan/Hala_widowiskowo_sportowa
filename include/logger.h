@@ -7,10 +7,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-// Katalog na raporty
 #define REPORTS_DIR "reports"
 
-// Poziomy logowania
 typedef enum {
     LOG_DEBUG = 0,
     LOG_INFO = 1,
@@ -19,7 +17,6 @@ typedef enum {
     LOG_CRITICAL = 4
 } LogLevel;
 
-// Struktura raportera
 typedef struct {
     FILE *file;
     char filename[256];
@@ -27,7 +24,6 @@ typedef struct {
     const char *process_name;
 } Logger;
 
-// Konwersja poziomu na string
 static inline const char* level_to_string(LogLevel level) {
     switch (level) {
         case LOG_DEBUG: return "DEBUG";
@@ -39,7 +35,6 @@ static inline const char* level_to_string(LogLevel level) {
     }
 }
 
-// Utworzenie katalogu na raporty
 static inline void create_reports_dir() {
     struct stat st = {0};
     if (stat(REPORTS_DIR, &st) == -1) {
@@ -47,7 +42,6 @@ static inline void create_reports_dir() {
     }
 }
 
-// Inicjalizacja raportera
 static inline Logger* reporter_init(const char *process_name, int process_id) {
     create_reports_dir();
 
@@ -57,7 +51,6 @@ static inline Logger* reporter_init(const char *process_name, int process_id) {
     r->process_id = process_id;
     r->process_name = process_name;
 
-    // Nazwa pliku z timestampem
     time_t now = time(NULL);
     struct tm *t = localtime(&now);
 
@@ -84,23 +77,20 @@ static inline Logger* reporter_init(const char *process_name, int process_id) {
     return r;
 }
 
-// Logowanie wiadomości
 static inline void reporter_log(Logger *r, LogLevel level, const char *format, ...) {
     if (!r || !r->file) return;
 
-    // Timestamp
     time_t now = time(NULL);
     char timestr[64];
     strftime(timestr, sizeof(timestr), "%Y-%m-%d %H:%M:%S", localtime(&now));
 
-    // Formatowanie wiadomości
     char message[1024];
     va_list args;
     va_start(args, format);
     vsnprintf(message, sizeof(message), format, args);
     va_end(args);
 
-    // Zapis do pliku
+    // zapis
     if (r->process_id >= 0) {
         fprintf(r->file, "[%s] [%s-%d] [%s] %s\n",
                 timestr, r->process_name, r->process_id,
@@ -114,7 +104,6 @@ static inline void reporter_log(Logger *r, LogLevel level, const char *format, .
     fflush(r->file);
 }
 
-// Zamknięcie raportera
 static inline void reporter_close(Logger *r) {
     if (r) {
         if (r->file) {
@@ -125,7 +114,6 @@ static inline void reporter_close(Logger *r) {
     }
 }
 
-// Funkcje pomocnicze dla różnych poziomów
 static inline void reporter_debug(Logger *r, const char *format, ...) {
     if (!r) return;
     char message[1024];

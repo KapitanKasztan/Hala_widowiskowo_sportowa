@@ -38,6 +38,11 @@ add_executable(kierownik
         include/common.h
 )
 
+#add_executable(
+#        tests
+#        tests.cpp
+#        include/common.h
+#)
 # Uwaga: Dodałem też 'kierownik' do listy poniżej, bo w Twoim kodzie go brakowało
 set_target_properties(Hala_widowiskowo_sportowa kasjer kibic_vip kibic pracownik_techniczny kierownik
         PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}

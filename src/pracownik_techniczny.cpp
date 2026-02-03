@@ -47,7 +47,6 @@ void proces_stanowiska(int sektor_id, int stanowisko_id, int shm_id, int sem_id,
     Hala* hala = (Hala*)shmat(shm_id, NULL, 0);
     if (hala == (void*)-1) exit(1);
 
-    // Unikalna nazwa dla każdego stanowiska
     char process_name[64];
     snprintf(process_name, sizeof(process_name), "stanowisko_%d_%d", sektor_id, stanowisko_id);
     g_reporter = reporter_init(process_name, -1);
@@ -94,6 +93,7 @@ void proces_stanowiska(int sektor_id, int stanowisko_id, int shm_id, int sem_id,
             exit(0);
         }
 
+        // wpuszczamy kibica na hale
         if (liczba_na_stanowisku > 0) {
             int kibic_id = aktualnie_kontrolowani[0];
             Kibic *kibic = &hala->kibice[kibic_id];
@@ -131,6 +131,7 @@ void proces_stanowiska(int sektor_id, int stanowisko_id, int shm_id, int sem_id,
             continue;
         }
 
+        // priorytet dla agresywnych
         sem_wait_ipc(sem_id, SEM_WEJSCIA + sektor_id);
         if (wejscie->rozmiar_kolejki > 0 && liczba_na_stanowisku == 0) {
              int znaleziono = 0;
@@ -152,6 +153,7 @@ void proces_stanowiska(int sektor_id, int stanowisko_id, int shm_id, int sem_id,
              }
         }
 
+        // dodajemy ludzi do stanowiska
         while (wejscie->rozmiar_kolejki > 0 && liczba_na_stanowisku < MAX_OSOB_NA_STANOWISKU) {
             int kibic_id = wejscie->kolejka_do_kontroli[0];
             Kibic *kibic = &hala->kibice[kibic_id];
@@ -170,6 +172,7 @@ void proces_stanowiska(int sektor_id, int stanowisko_id, int shm_id, int sem_id,
                     wejscie->kolejka_do_kontroli[j] = wejscie->kolejka_do_kontroli[j+1];
                 wejscie->rozmiar_kolejki--;
             } else {
+                // inna druzyna - przepuszczamy
                 if (kibic->przepuscil < MAX_PRZEPUSZCZONYCH) {
                     kibic->przepuscil++;
                     przepuszczen_grup++;
