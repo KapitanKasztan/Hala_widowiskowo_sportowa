@@ -1,4 +1,4 @@
-// main.cpp - Pełna wersja z VIP-ami
+// main.cpp - Wersja z poprawnym zamykaniem
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -14,9 +14,7 @@
 #include "include/common.h"
 
 volatile sig_atomic_t zakoncz = 0;
-int g_shm_id = -1;
-int g_sem_id = -1;
-int g_msg_id = -1;
+int g_shm_id = -1, g_sem_id = -1, g_msg_id = -1;
 
 void obsluga_sygnalu(int sig) {
     if (sig == SIGINT || sig == SIGTERM) {
@@ -25,29 +23,115 @@ void obsluga_sygnalu(int sig) {
     }
 }
 
-void sprzatanie() {
-    printf("[MAIN] Sprzątanie zasobów...\n");
+// Funkcja usuwająca zasoby - wywoływana TYLKO na samym końcu
+void usun_zasoby() {
+    printf("[MAIN] Usuwanie zasobów IPC...\n");
     if (g_msg_id >= 0) msgctl(g_msg_id, IPC_RMID, NULL);
     if (g_sem_id >= 0) semctl(g_sem_id, 0, IPC_RMID);
     if (g_shm_id >= 0) shmctl(g_shm_id, IPC_RMID, NULL);
-    printf("[MAIN] Zasoby zwolnione. Do widzenia!\n");
+    printf("[MAIN] Zasoby usunięte.\n");
 }
 
 void wyswietl_status(Hala *hala) {
     sem_wait_ipc(hala->sem_id, SEM_MAIN);
     printf("\n=== STATUS ===\n");
-    printf("Sprzedane bilety: %d/%d\n", hala->sprzedane_bilety, LIMIT_SPRZEDAZY);
-    printf("Kibice na hali: %d\n", hala->kibice_na_hali);
-    printf("Otwarte kasy: %d\n", hala->otwarte_kasy);
-    printf("Kolejka do kasy: %d\n", hala->rozmiar_kolejki_kasy);
-    printf("VIP w kolejce: %d\n", hala->rozmiar_kolejki_kasy_vip);
-    printf("Bilety w sektorach: ");
-    for (int i = 0; i < LICZBA_SEKTOROW; i++) {
-        printf("[%d:%d] ", i, hala->sprzedane_bilety_w_sektorze[i]);
-    }
+    printf("Sprzedane: %d/%d | Na hali: %d\n", hala->sprzedane_bilety, LIMIT_SPRZEDAZY, hala->kibice_na_hali);
+    printf("Otwarte kasy: %d | Kolejka: %d\n", hala->otwarte_kasy, hala->rozmiar_kolejki_kasy);
+    printf("Sektory: ");
+    for (int i = 0; i < LICZBA_SEKTOROW; i++) printf("[%d:%d] ", i, hala->sprzedane_bilety_w_sektorze[i]);
     printf("[VIP:%d]\n", hala->sprzedane_bilety_w_sektorze[SEKTOR_VIP]);
     printf("===============\n");
     sem_post_ipc(hala->sem_id, SEM_MAIN);
+}
+
+void aktualizuj_kasy(Hala *hala) {
+    sem_wait_ipc(g_sem_id, SEM_MAIN);
+    int kolejka = hala->rozmiar_kolejki_kasy;
+    int aktywne = hala->otwarte_kasy;
+    int sprzedane = hala->sprzedane_bilety;
+    sem_post_ipc(g_sem_id, SEM_MAIN);
+
+    if (sprzedane >= LIMIT_SPRZEDAZY) return;
+
+    int prog = K_KIBICOW / 10;
+    int potrzebne = 1 + (kolejka / prog);
+    if (potrzebne < 2) potrzebne = 2;
+    if (potrzebne > LICZBA_KAS) potrzebne = LICZBA_KAS;
+
+    // OTWIERANIE
+    while (aktywne < potrzebne) {
+        int nowe_id = aktywne + 1;
+        pid_t pid = fork();
+        if (pid == 0) {
+            char id[16], s1[16], s2[16], s3[16];
+            sprintf(id, "%d", nowe_id); sprintf(s1, "%d", g_shm_id); sprintf(s2, "%d", g_sem_id); sprintf(s3, "%d", g_msg_id);
+            execl("./kasjer", "kasjer", id, s1, s2, s3, NULL);
+            exit(1);
+        }
+        sem_wait_ipc(g_sem_id, SEM_MAIN);
+        hala->kasy_pids[aktywne] = pid;
+        hala->otwarte_kasy++;
+        sem_post_ipc(g_sem_id, SEM_MAIN);
+        printf("[MAIN] +++ Otwieram kasę nr %d (Kolejka: %d)\n", nowe_id, kolejka);
+        aktywne++;
+    }
+
+    // ZAMYKANIE
+    if (aktywne > 2) {
+        if (kolejka < prog * (aktywne - 1)) {
+            int idx_do_zamkniecia = aktywne - 1;
+            pid_t pid = hala->kasy_pids[idx_do_zamkniecia];
+            if (pid > 0) {
+                kill(pid, SIGTERM);
+                waitpid(pid, NULL, WNOHANG);
+            }
+            sem_wait_ipc(g_sem_id, SEM_MAIN);
+            hala->otwarte_kasy--;
+            hala->kasy_pids[idx_do_zamkniecia] = 0;
+            sem_post_ipc(g_sem_id, SEM_MAIN);
+            printf("[MAIN] --- Zamykam kasę nr %d (Mały ruch: %d)\n", idx_do_zamkniecia + 1, kolejka);
+        }
+    }
+}
+
+void proces_generatora(int shm_id, int sem_id, int msg_id) {
+    srand(getpid());
+    for (int i = 0; i < K_KIBICOW; i++) {
+        usleep(rand() % 150000);
+        if (fork() == 0) {
+            char idx[16], s1[16], s2[16], s3[16];
+            sprintf(idx, "%d", i); sprintf(s1, "%d", shm_id); sprintf(s2, "%d", sem_id); sprintf(s3, "%d", msg_id);
+            execl("./kibic", "kibic", idx, s1, s2, s3, NULL);
+            exit(1);
+        }
+    }
+    for (int i = 0; i < POJEMNOSC_VIP; i++) {
+        usleep(rand() % 300000);
+        if (fork() == 0) {
+            char idx[16], s1[16], s2[16], s3[16];
+            sprintf(idx, "%d", i); sprintf(s1, "%d", shm_id); sprintf(s2, "%d", sem_id); sprintf(s3, "%d", msg_id);
+            execl("./kibic_vip", "kibic_vip", idx, s1, s2, s3, NULL);
+            exit(1);
+        }
+    }
+    exit(0);
+}
+
+bool init_ipc(Hala *&hala) {
+    key_t k1=ftok(".",'S'), k2=ftok(".",'M'), k3=ftok(".",'Q');
+    g_shm_id = shmget(k1, sizeof(Hala), IPC_CREAT|0666);
+    g_sem_id = semget(k2, LICZBA_SEMAFOROW, IPC_CREAT|0666);
+    g_msg_id = msgget(k3, IPC_CREAT|0666);
+    if(g_shm_id<0||g_sem_id<0||g_msg_id<0) return false;
+    hala = (Hala*)shmat(g_shm_id,NULL,0);
+    sem_init_ipc(g_sem_id, SEM_MAIN, 1);
+    sem_init_ipc(g_sem_id, SEM_KASY, 1);
+    sem_init_ipc(g_sem_id, SEM_KOLEJKA, 1);
+    for(int i=0;i<LICZBA_SEKTOROW;i++) sem_init_ipc(g_sem_id, SEM_WEJSCIA+i, 1);
+    memset(hala,0,sizeof(Hala));
+    hala->shm_key=k1; hala->sem_key=k2; hala->msg_key=k3;
+    hala->shm_id=g_shm_id; hala->sem_id=g_sem_id; hala->msg_id=g_msg_id;
+    return true;
 }
 
 int main(int argc, char *argv[]) {
@@ -55,169 +139,81 @@ int main(int argc, char *argv[]) {
     if (argc > 1) czas_tp = atoi(argv[1]);
 
     srand(time(NULL));
+    struct sigaction sa; sa.sa_handler = obsluga_sygnalu; sigemptyset(&sa.sa_mask); sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL); sigaction(SIGTERM, &sa, NULL);
 
-    printf("===========================================\n");
-    printf("=== SYMULACJA HALI Z VIP-ami ===\n");
-    printf("===========================================\n");
-    printf("Pojemność: %d + %d VIP\n", K_KIBICOW, POJEMNOSC_VIP);
-    printf("Dynamiczny offset VIP: %d\n", VIP_MTYPE_OFFSET);
+    // UWAGA: Usunąłem atexit(sprzatanie), żeby kontrolować moment usunięcia ręcznie!
 
-    struct sigaction sa;
-    sa.sa_handler = obsluga_sygnalu;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
+    Hala *hala;
+    if (!init_ipc(hala)) return 1;
 
-    atexit(sprzatanie);
-
-    key_t shm_key = ftok(".", 'S');
-    key_t sem_key = ftok(".", 'M');
-    key_t msg_key = ftok(".", 'Q');
-
-    if (shm_key == -1 || sem_key == -1 || msg_key == -1) { perror("ftok"); return 1; }
-
-    g_shm_id = shmget(shm_key, sizeof(Hala), IPC_CREAT | 0666);
-    if (g_shm_id < 0) { perror("shmget"); return 1; }
-
-    Hala *hala = (Hala*) shmat(g_shm_id, NULL, 0);
-    if (hala == (void*)-1) { perror("shmat"); return 1; }
-
-    g_sem_id = semget(sem_key, LICZBA_SEMAFOROW, IPC_CREAT | 0666);
-    if (g_sem_id < 0) { perror("semget"); return 1; }
-
-    sem_init_ipc(g_sem_id, SEM_MAIN, 1);
-    sem_init_ipc(g_sem_id, SEM_KASY, 1);
-    sem_init_ipc(g_sem_id, SEM_KOLEJKA, 1);
-    for (int i = 0; i < LICZBA_SEKTOROW; i++) {
-        sem_init_ipc(g_sem_id, SEM_WEJSCIA + i, 1);
-    }
-
-    g_msg_id = msgget(msg_key, IPC_CREAT | 0666);
-    if (g_msg_id < 0) { perror("msgget"); return 1; }
-
-    memset(hala, 0, sizeof(Hala));
-    hala->shm_key = shm_key;
-    hala->sem_key = sem_key;
-    hala->msg_key = msg_key;
-    hala->shm_id = g_shm_id;
-    hala->sem_id = g_sem_id;
-    hala->msg_id = g_msg_id;
-
-    // Inicjalizacja Zwykłych
-    printf("[MAIN] Inicjalizacja kibiców...\n");
     for (int i = 0; i < K_KIBICOW; i++) {
         hala->kibice[i].id = i;
         hala->kibice[i].druzyna = i % 2;
         hala->kibice[i].sektor = -1;
-        hala->kibice[i].jest_vip = 0;
-        hala->kibice[i].jest_dzieckiem = (rand() % 100 < 10) ? 1 : 0; // Dzieci włączone
-        hala->kibice[i].ma_bilet = 0;
-        hala->kibice[i].na_hali = 0;
-        hala->kibice[i].liczba_biletow = 0;
-        hala->kibice[i].przepuscil = 0;
-        hala->kibice[i].pid = 0;
+        hala->kibice[i].jest_dzieckiem = (rand() % 100 < 10) ? 1 : 0;
     }
-
-    // WAŻNE: Ustawiamy licznik na startową liczbę kibiców,
-    // aby nowi towarzysze otrzymywali ID > 160 i nie nadpisywali pamięci!
     hala->liczba_kibicow = K_KIBICOW;
-
-    // Inicjalizacja VIP - WŁĄCZONA
     for (int i = 0; i < POJEMNOSC_VIP; i++) {
         hala->kibice_vip[i].id = i;
-        hala->kibice_vip[i].jest_vip = 1;
-        hala->kibice_vip[i].druzyna = 0;
         hala->kibice_vip[i].sektor = SEKTOR_VIP;
-        hala->kibice_vip[i].ma_bilet = 0;
-        hala->kibice_vip[i].na_hali = 0;
-        hala->kibice_vip[i].pid = 0;
     }
 
-    printf("[MAIN] Uruchamiam kierownika...\n");
     if (fork() == 0) {
-        char s1[16], s2[16], s3[16];
-        sprintf(s1, "%d", g_shm_id); sprintf(s2, "%d", g_sem_id); sprintf(s3, "%d", g_msg_id);
-        execl("./kierownik", "kierownik", s1, s2, s3, NULL);
-        exit(1);
+        char s1[16],s2[16],s3[16]; sprintf(s1,"%d",g_shm_id); sprintf(s2,"%d",g_sem_id); sprintf(s3,"%d",g_msg_id);
+        execl("./kierownik", "kierownik", s1, s2, s3, NULL); exit(1);
     }
-
-    printf("[MAIN] Uruchamiam kasy...\n");
-    for (int i = 0; i < 2; i++) {
-        if (fork() == 0) {
-            char id[16], s1[16], s2[16], s3[16];
-            sprintf(id, "%d", i+1); sprintf(s1, "%d", g_shm_id); sprintf(s2, "%d", g_sem_id); sprintf(s3, "%d", g_msg_id);
-            execl("./kasjer", "kasjer", id, s1, s2, s3, NULL);
-            exit(1);
-        }
-        hala->otwarte_kasy++;
-    }
-
-    printf("[MAIN] Uruchamiam stanowiska...\n");
-    for (int s = 0; s < LICZBA_SEKTOROW; s++) {
-        for (int st = 0; st < STANOWISKA_NA_SEKTOR; st++) {
+    for (int s=0; s<LICZBA_SEKTOROW; s++) {
+        for (int st=0; st<STANOWISKA_NA_SEKTOR; st++) {
             if (fork() == 0) {
-                char sek[16], sta[16], s1[16], s2[16], s3[16];
-                sprintf(sek, "%d", s); sprintf(sta, "%d", st);
-                sprintf(s1, "%d", g_shm_id); sprintf(s2, "%d", g_sem_id); sprintf(s3, "%d", g_msg_id);
-                execl("./pracownik_techniczny", "pracownik_techniczny", sek, sta, s1, s2, s3, NULL);
-                exit(1);
+                char sek[16],sta[16],s1[16],s2[16],s3[16];
+                sprintf(sek,"%d",s); sprintf(sta,"%d",st); sprintf(s1,"%d",g_shm_id); sprintf(s2,"%d",g_sem_id); sprintf(s3,"%d",g_msg_id);
+                execl("./pracownik_techniczny", "pracownik_techniczny", sek, sta, s1, s2, s3, NULL); exit(1);
             }
         }
     }
 
-    sleep(1);
-
-    printf("[MAIN] Generuję kibiców (%d)...\n", K_KIBICOW);
-    for (int i = 0; i < K_KIBICOW && !zakoncz; i++) {
-        if (fork() == 0) {
-            char idx[16], s1[16], s2[16], s3[16];
-            sprintf(idx, "%d", i); sprintf(s1, "%d", g_shm_id); sprintf(s2, "%d", g_sem_id); sprintf(s3, "%d", g_msg_id);
-            execl("./kibic", "kibic", idx, s1, s2, s3, NULL);
-            exit(1);
+    for (int i=0; i<2; i++) {
+        pid_t pid = fork();
+        if (pid == 0) {
+            char id[16],s1[16],s2[16],s3[16];
+            sprintf(id,"%d",i+1); sprintf(s1,"%d",g_shm_id); sprintf(s2,"%d",g_sem_id); sprintf(s3,"%d",g_msg_id);
+            execl("./kasjer", "kasjer", id, s1, s2, s3, NULL); exit(1);
         }
-        usleep(10000 + rand() % 10000);
+        hala->kasy_pids[i] = pid;
+        hala->otwarte_kasy++;
     }
 
-    // Generowanie VIP - WŁĄCZONE
-    printf("[MAIN] Generuję VIP-ów (%d)...\n", POJEMNOSC_VIP);
-    for (int i = 0; i < POJEMNOSC_VIP && !zakoncz; i++) {
-        if (fork() == 0) {
-            char idx[16], s1[16], s2[16], s3[16];
-            sprintf(idx, "%d", i); sprintf(s1, "%d", g_shm_id); sprintf(s2, "%d", g_sem_id); sprintf(s3, "%d", g_msg_id);
-            execl("./kibic_vip", "kibic_vip", idx, s1, s2, s3, NULL);
-            exit(1);
-        }
-        usleep(100000 + rand() % 200000);
-    }
+    if (fork() == 0) proces_generatora(g_shm_id, g_sem_id, g_msg_id);
 
     printf("\n[MAIN] Start meczu za %d s...\n", czas_tp);
     sleep(czas_tp);
     hala->mecz_rozpoczety = 1;
 
-    int timeout = 180;
-    while (!zakoncz && timeout > 0) {
+    while (!zakoncz) {
         wyswietl_status(hala);
+        aktualizuj_kasy(hala);
+
         sem_wait_ipc(hala->sem_id, SEM_MAIN);
         int na_hali = hala->kibice_na_hali;
         int sprzedane = hala->sprzedane_bilety;
         sem_post_ipc(hala->sem_id, SEM_MAIN);
 
-        // Limit uwzględnia VIP (176)
         if (na_hali >= sprzedane && sprzedane >= LIMIT_SPRZEDAZY) {
-            printf("[MAIN] Pełna frekwencja (%d/%d)! Kończę symulację.\n", na_hali, LIMIT_SPRZEDAZY);
+            printf("[MAIN] SUKCES: %d/%d (100%%)\n", na_hali, LIMIT_SPRZEDAZY);
             break;
         }
-        sleep(3);
-        timeout -= 3;
+        sleep(2);
     }
 
-    printf("\n=== PODSUMOWANIE ===\n");
-    printf("Kibice na hali: %d\n", hala->kibice_na_hali);
-    printf("Sprzedane: %d/%d\n", hala->sprzedane_bilety, LIMIT_SPRZEDAZY);
-
+    printf("\n[MAIN] Koniec. Zabijam procesy...\n");
     kill(0, SIGTERM);
+
+    // Czekamy aż wszystko zdechnie, żeby nie usunąć semaforów pod nogami
     while (wait(NULL) > 0);
+
+    // DOPIERO TERAZ usuwamy IPC
+    usun_zasoby();
     shmdt(hala);
     return 0;
 }

@@ -1,4 +1,4 @@
-// include/common.h
+// include/common.h - Wersja kuloodporna (Ignoruje błędy przy zamykaniu)
 #pragma once
 
 #include <errno.h>
@@ -30,12 +30,7 @@
 #define POJEMNOSC_VIP (int)(0.1 * K_KIBICOW)
 #define SEKTOR_VIP 8
 
-// PRZYWRACAMY VIP-ów DO LIMITU
 #define LIMIT_SPRZEDAZY (K_KIBICOW + POJEMNOSC_VIP)
-
-// DYNAMICZNY OFFSET
-// Zwykłe ID idą do 2*K (kibice + towarzysze).
-// Mnożnik *3 daje bezpieczny margines.
 #define VIP_MTYPE_OFFSET (K_KIBICOW * 3)
 
 union semun {
@@ -88,7 +83,7 @@ typedef struct {
 
 typedef struct {
     Stanowisko stanowiska[STANOWISKA_NA_SEKTOR];
-    int kolejka_do_kontroli[K_KIBICOW * 4]; // Zwiększony bufor
+    int kolejka_do_kontroli[K_KIBICOW * 4];
     int rozmiar_kolejki;
     int wstrzymane;
     int kibice_w_sektorze[K_KIBICOW];
@@ -132,31 +127,39 @@ typedef struct {
     int ewakuacja;
 
     pid_t kierownik_pid;
+    pid_t kasy_pids[LICZBA_KAS];
     int shm_id;
 } Hala;
 
-static inline void sem_wait_ipc(int sem_id, int sem_num) {
+// === NAPRAWIONE FUNKCJE SEMAFORÓW ===
+// Ignorują błędy związane z usuwaniem semaforów (EINVAL, EIDRM)
+
+static inline int sem_wait_ipc(int sem_id, int sem_num) {
     struct sembuf op;
     op.sem_num = sem_num;
     op.sem_op = -1;
     op.sem_flg = 0;
     while (semop(sem_id, &op, 1) == -1) {
-        if (errno == EINTR) continue;
+        if (errno == EINTR) continue; // Przerwanie sygnałem - próbuj dalej
+        if (errno == EINVAL || errno == EIDRM) return -1; // Semafor usunięty - ciche wyjście
         perror("semop wait");
-        break;
+        return -1;
     }
+    return 0;
 }
 
-static inline void sem_post_ipc(int sem_id, int sem_num) {
+static inline int sem_post_ipc(int sem_id, int sem_num) {
     struct sembuf op;
     op.sem_num = sem_num;
     op.sem_op = 1;
     op.sem_flg = 0;
     while (semop(sem_id, &op, 1) == -1) {
         if (errno == EINTR) continue;
+        if (errno == EINVAL || errno == EIDRM) return -1; // Semafor usunięty - ciche wyjście
         perror("semop post");
-        break;
+        return -1;
     }
+    return 0;
 }
 
 static inline void sem_init_ipc(int sem_id, int sem_num, int value) {
