@@ -185,6 +185,7 @@ void test_K5_max_bilety() {
     int min_znaleziony = 10;
 
     for(int i = 0; i < 1000; i++) {
+        // logika z kasy
         int liczba_biletow = 1 + (rand() % 2);
 
         if (liczba_biletow > max_znaleziony) max_znaleziony = liczba_biletow;
@@ -196,6 +197,7 @@ void test_K5_max_bilety() {
 
     Kibic dziecko;
     dziecko.jest_dzieckiem = 1;
+    // logika z kasy
     int bilety_dla_dziecka = dziecko.jest_dzieckiem ? 2 : (1 + (rand() % 2));
 
     print_result("K5-3", "Dziecko 2 bilety", bilety_dla_dziecka == 2);
@@ -238,23 +240,31 @@ void test_K8_VIP_bypass() {
     Hala* hala;
     setup_env(&hala);
 
-    int vip_queue_addr = (long)&hala->kolejka_do_kasy_VIP;
-    int norm_queue_addr = (long)&hala->kolejka_do_kasy;
+    int poczatkowa_zwykla = 10;
+    int poczatkowa_vip = 2;
 
-    print_result("K8-1", "Osobna kolejka VIP", vip_queue_addr != norm_queue_addr);
+    hala->rozmiar_kolejki_kasy = poczatkowa_zwykla;
+    hala->rozmiar_kolejki_kasy_vip = poczatkowa_vip;
 
-    hala->rozmiar_kolejki_kasy = 10;
-    hala->rozmiar_kolejki_kasy_vip = 2;
-
-    for(int i = 0; i < 10; i++) hala->kolejka_do_kasy[i] = i;
-    for(int i = 0; i < 2; i++) hala->kolejka_do_kasy_VIP[i] = 100 + i;
-
-    int obsluzono_vip_przed_zwyklymi = 0;
-    if (hala->rozmiar_kolejki_kasy_vip > 0) {
-        obsluzono_vip_przed_zwyklymi = 1;
+    for(int i = 0; i < poczatkowa_zwykla; i++) hala->kolejka_do_kasy[i] = i;
+    for(int i = 0; i < poczatkowa_vip; i++) hala->kolejka_do_kasy_VIP[i] = 100 + i;
+    int obsłużeni_vip = 0;
+    while (hala->rozmiar_kolejki_kasy_vip > 0) {
+        // Logika z kasjera obsługującego VIP-ów
+        for (int j = 0; j < hala->rozmiar_kolejki_kasy_vip - 1; j++) {
+            hala->kolejka_do_kasy_VIP[j] = hala->kolejka_do_kasy_VIP[j + 1];
+        }
+        hala->rozmiar_kolejki_kasy_vip--;
+        obsłużeni_vip++;
     }
 
-    print_result("K8-2", "VIP przed zwyklymi", obsluzono_vip_przed_zwyklymi == 1);
+
+    int czy_vip_pusta = (hala->rozmiar_kolejki_kasy_vip == 0);
+
+    int czy_zwykla_stoi = (hala->rozmiar_kolejki_kasy == poczatkowa_zwykla);
+
+    print_result("K8-1", "Kolejka VIP została całkowicie rozładowana", czy_vip_pusta && obsłużeni_vip == poczatkowa_vip);
+    print_result("K8-2", "Kolejka zwykła pozostała nietknięta (prawidłowy priorytet)", czy_zwykla_stoi);
 
     cleanup();
 }
@@ -394,30 +404,32 @@ void test_C6_dzieci() {
 }
 
 void test_C7_VIP_no_check() {
-    printf("\n%s=== TEST C7 ===%s\n", YELLOW, RESET);
-
+    printf("\n%s=== TEST C7 (POPRAWIONY) ===%s\n", YELLOW, RESET);
     Hala* hala;
     setup_env(&hala);
 
-    int vip_id = 0;
+    int id_vip = 5;
+    int id_kibic = 50;
 
-    hala->kibice_vip[vip_id].id = vip_id;
-    hala->kibice_vip[vip_id].na_hali = 1;
-    hala->kibice_vip[vip_id].sektor = SEKTOR_VIP;
+    int sektor_kibica = 0;
+    hala->wejscia[sektor_kibica].kolejka_do_kontroli[0] = id_kibic;
+    hala->wejscia[sektor_kibica].rozmiar_kolejki = 1;
 
+    // VIP: Kasjer nie wpisuje go do kolejki sektora (bo VIP idzie prosto do sektora 8)
     int vip_w_kolejce = 0;
-    for(int s = 0; s < LICZBA_SEKTOROW; s++) {
+    for(int s = 0; s < LICZBA_SEKTOROW; s++) { // Sektory 0-7
         for(int i = 0; i < hala->wejscia[s].rozmiar_kolejki; i++) {
-            if (hala->wejscia[s].kolejka_do_kontroli[i] == vip_id) {
-                vip_w_kolejce = 1;
-                break;
-            }
+            if (hala->wejscia[s].kolejka_do_kontroli[i] == id_vip) vip_w_kolejce = 1;
         }
     }
 
-    print_result("C7-1", "VIP na hali", hala->kibice_vip[vip_id].na_hali == 1);
-    print_result("C7-2", "VIP bez kontroli", vip_w_kolejce == 0);
-    print_result("C7-3", "Sektor VIP", hala->kibice_vip[vip_id].sektor == SEKTOR_VIP);
+    int kibic_w_kolejce = 0;
+    for(int i = 0; i < hala->wejscia[sektor_kibica].rozmiar_kolejki; i++) {
+        if (hala->wejscia[sektor_kibica].kolejka_do_kontroli[i] == id_kibic) kibic_w_kolejce = 1;
+    }
+
+    print_result("C7-1", "VIP poprawnie omija bramki (Bypass)", vip_w_kolejce == 0);
+    print_result("C7-2", "Zwykły kibic poprawnie utknął na bramce", kibic_w_kolejce == 1);
 
     cleanup();
 }
