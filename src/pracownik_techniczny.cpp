@@ -70,6 +70,8 @@ void proces_stanowiska(int sektor_id, int stanowisko_id, int shm_id, int sem_id,
 
     int wpuszczonych_laczni = 0;
     int przepuszczen_grup = 0;
+    // odkomenduj aby pracownik techniczny włączył sie później
+    //sleep(15);
 
     while (1) {
         if (ewakuacja || hala->ewakuacja) {

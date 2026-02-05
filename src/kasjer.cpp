@@ -167,6 +167,7 @@ void proces_kasy(int id, int shm_id, int sem_id, int msg_id) {
             hala->rozmiar_kolejki_kasy--;
 
             int liczba = 1;
+            // zakomenduj zeby usunac mozliwosc 2 biletow
             if (kibic->jest_dzieckiem)
                 liczba = 2;
             else

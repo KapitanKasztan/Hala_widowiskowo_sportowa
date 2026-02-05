@@ -165,6 +165,7 @@ void proces_generatora(int shm_id, int sem_id, int msg_id) {
     srand(getpid());
 
     for (int i = 0; i < K_KIBICOW; i++) {
+        // zakomenduj zeby usunac opoznienia we wprowadzaniu kibicow
         usleep(rand() % 150000);
         if (fork() == 0) {
             char idx[16], s1[16], s2[16], s3[16];
@@ -177,6 +178,7 @@ void proces_generatora(int shm_id, int sem_id, int msg_id) {
         }
     }
 
+    // zakomenduj aby usunac vip
     for (int i = 0; i < POJEMNOSC_VIP; i++) {
         usleep(rand() % 300000);
         if (fork() == 0) {
@@ -224,7 +226,7 @@ void inicjalizuj_kibicow(Hala *hala) {
         hala->kibice[i].id = i;
         hala->kibice[i].druzyna = i % 2;
         hala->kibice[i].sektor = -1;
-        hala->kibice[i].jest_dzieckiem = (rand() % 100 < 10) ? 1 : 0;
+        //hala->kibice[i].jest_dzieckiem = (rand() % 100 < 10) ? 1 : 0;
         if (hala->kibice[i].jest_dzieckiem) dzieci++;
     }
     hala->liczba_kibicow = K_KIBICOW;
@@ -265,10 +267,12 @@ void zapisz_statystyki(int nr, Hala *hala, time_t start, time_t koniec) {
 
 int main(int argc, char *argv[]) {
     int czas_tp = 5;
+    int czas_trwania_meczu = 5;
     int tryb_inf = 0;
 
     if (argc > 1) czas_tp = atoi(argv[1]);
-    if (argc > 2 && strcmp(argv[2], "--infinite") == 0) {
+    if (argc > 2) czas_trwania_meczu = atoi(argv[2]);
+    if (argc > 3 && strcmp(argv[3], "--infinite") == 0) {
         tryb_inf = 1;
         printf("\n[MAIN] Tryb nieskonczonosci\n\n");
     }
@@ -290,7 +294,7 @@ int main(int argc, char *argv[]) {
     signal(SIGTERM, SIG_IGN);
 
     int nr = 1;
-
+    int sekundy_meczu = 0;
     while (1) {
         time_t start = time(NULL);
 
@@ -322,18 +326,32 @@ int main(int argc, char *argv[]) {
             int sprzedane = hala->sprzedane_bilety;
             sem_post_ipc(hala->sem_id, SEM_MAIN);
 
+            if (sekundy_meczu >= czas_trwania_meczu && czas_trwania_meczu != 0) {
+                printf("\n[MAIN] Koniec meczu po %d sekundach (na hali: %d)\n",
+                       czas_trwania_meczu, na_hali);
+                reporter_info(g_main_reporter, "Koniec meczu po %d s", czas_trwania_meczu);
+                break;
+            }
+
             if (na_hali >= sprzedane && sprzedane >= LIMIT_SPRZEDAZY) {
                 printf("\n[MAIN] Koniec: %d/%d\n", na_hali, LIMIT_SPRZEDAZY);
                 break;
             }
 
-            sleep(2);
+            sleep(1);
+            sekundy_meczu++;
         }
 
         time_t koniec = time(NULL);
 
         printf("\n[MAIN] Koniec meczu\n");
+        sem_wait_ipc(hala->sem_id, SEM_MAIN);
+        hala->mecz_zakonczony = 1;
+        sem_post_ipc(hala->sem_id, SEM_MAIN);
 
+        // ⭐ DAJ PROCESOM CHWILĘ NA REAKCJĘ
+        printf("[MAIN] Czekam na zakonczenie procesow...\n");
+        sleep(2);  // Ważne! Daj czas na odebranie komunikatów
         // Zabij kierownika
         if (hala->kierownik_pid > 0) {
             kill(hala->kierownik_pid, SIGKILL);
