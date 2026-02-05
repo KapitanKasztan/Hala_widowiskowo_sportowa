@@ -56,16 +56,12 @@ static inline Logger* reporter_init(const char *process_name, int process_id) {
 
     if (process_id >= 0) {
         snprintf(r->filename, sizeof(r->filename),
-                "%s/%s_%d_%04d%02d%02d_%02d%02d%02d.log",
-                REPORTS_DIR, process_name, process_id,
-                t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
-                t->tm_hour, t->tm_min, t->tm_sec);
+                "%s/%s_%d.log",
+                REPORTS_DIR, process_name, process_id);
     } else {
         snprintf(r->filename, sizeof(r->filename),
-                "%s/%s_%04d%02d%02d_%02d%02d%02d.log",
-                REPORTS_DIR, process_name,
-                t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
-                t->tm_hour, t->tm_min, t->tm_sec);
+                "%s/%s.log",
+                REPORTS_DIR, process_name);
     }
 
     r->file = fopen(r->filename, "w");
