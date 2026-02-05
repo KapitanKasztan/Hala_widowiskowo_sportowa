@@ -173,3 +173,12 @@ Test zwraca **PASS**, jeśli:
 **Warunek zaliczenia:**
 * **PASS:** Lista wiszących procesów jest pusta.
 * **FAIL:** Skrypt wypisuje PID-y procesów, które przetrwały.
+
+### Test 5: Manualny test zachowania przy dużej ilości procesów
+
+1. Wykomendować kod odpowiedzialny za:
+* Vipów
+* Towarzyszy
+* Dzieci 
+2. Dodać wait przed uruchomieniem pracownika technicznego
+3. Wprowadzić dużą liczbę do stałej “K_KIBICOW” 
