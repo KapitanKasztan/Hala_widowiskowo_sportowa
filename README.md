@@ -116,7 +116,6 @@ Dokumentacja opisuje mechanizmy komunikacji międzyprocesowej (IPC) wykorzystane
 **Cel:** Weryfikacja logiki biznesowej (sprzedane bilety == osoby na hali) oraz stabilności pamięci.
 
 * **Plik testowy:** `test_spojnosci.sh`
-* **Logi:** `tests/tmp/race_test.log`
 
 **Przebieg testu:**
 1.  Uruchomienie symulacji z przekierowaniem `stdout` i `stderr` do logu.
@@ -139,10 +138,10 @@ Test zwraca **PASS**, jeśli: Różnica między liczbą biletów a liczbą osób
 **Przebieg testu:**
 1.  **PRZED:** Zliczenie zasobów IPC użytkownika:
     ```bash
-    ipcs -m -s -q > tmp/before.log
+    ipcs -m -s -q > tmp/czyszczenie_ipc_before.log
     ```
 2.  Uruchomienie i zakończenie symulacji.
-3.  **PO:** Ponowne zliczenie zasobów do `tmp/after.log`.
+3.  **PO:** Ponowne zliczenie zasobów do `tmp/czyszczenie_ipc_before/after.log`.
 4.  **Weryfikacja:** Porównanie list zasobów.
 
 > **Uwaga:** Test opiera się na porównaniu różnic (`diff`), a nie na warunku `count == 0`, ponieważ środowiska programistyczne (np. CLion) mogą tworzyć własne segmenty pamięci dzielonej, co powodowałoby fałszywe błędy.
