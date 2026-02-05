@@ -51,9 +51,6 @@ static inline Logger* reporter_init(const char *process_name, int process_id) {
     r->process_id = process_id;
     r->process_name = process_name;
 
-    time_t now = time(NULL);
-    struct tm *t = localtime(&now);
-
     if (process_id >= 0) {
         snprintf(r->filename, sizeof(r->filename),
                 "%s/%s_%d.log",

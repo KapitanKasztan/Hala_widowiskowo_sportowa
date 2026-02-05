@@ -123,12 +123,10 @@ Dokumentacja opisuje mechanizmy komunikacji międzyprocesowej (IPC) wykorzystane
 2.  Pobranie danych z logów:
     * `Sprzedane:` (Liczba sprzedanych biletów)
     * `Na hali:` (Liczba kibiców wewnątrz)
-3.  Analiza błędów krytycznych (grep fraz: `Segmentation fault`, `core dumped`, `mismatch`).
 
 **Warunek zaliczenia:**
-Test zwraca **PASS**, jeśli:
-1.  Różnica między liczbą biletów a liczbą osób wynosi **0**.
-2.  Liczba błędów pamięci wynosi **0**.
+Test zwraca **PASS**, jeśli: Różnica między liczbą biletów a liczbą osób wynosi **0**.
+
 
 ---
 
@@ -173,12 +171,3 @@ Test zwraca **PASS**, jeśli:
 **Warunek zaliczenia:**
 * **PASS:** Lista wiszących procesów jest pusta.
 * **FAIL:** Skrypt wypisuje PID-y procesów, które przetrwały.
-
-### Test 5: Manualny test zachowania przy dużej ilości procesów
-
-1. Wykomendować kod odpowiedzialny za:
-* Vipów
-* Towarzyszy
-* Dzieci 
-2. Dodać wait przed uruchomieniem pracownika technicznego
-3. Wprowadzić dużą liczbę do stałej “K_KIBICOW” 
